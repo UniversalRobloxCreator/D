@@ -1,0 +1,12 @@
+services:
+  reminders:
+    build: .
+    image: telegram-reminders-miniapp:latest
+    container_name: reminders-miniapp
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    volumes:
+      - ./Data:/app/Data
