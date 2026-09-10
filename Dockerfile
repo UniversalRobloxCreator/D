@@ -16,6 +16,7 @@ RUN npm install --omit=dev --no-audit --no-fund
 
 # App source
 COPY server.js ./
+COPY texts.js ./
 COPY Web ./Web
 COPY Data ./Data
 
