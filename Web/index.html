@@ -4,123 +4,67 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <meta name="theme-color" content="#0d0d0d">
-  <title>Заметки — Блокнот</title>
+  <title>Reminders — Блокнот</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
   <div id="app">
-    <!-- Header -->
     <header class="header">
       <div class="header-left">
-        <button class="icon-btn header-home-btn" id="btn-home" title="Меню" aria-label="Меню">
-          <span class="icon" data-icon="notes"></span>
-        </button>
-        <h1 class="logo">Заметки</h1>
+        <h1 class="logo"><svg class="icon-outline logo-icon" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><line x1="10" y1="9" x2="8" y2="9"/></svg> Reminders</h1>
       </div>
-      <div class="header-right">
-        <button class="icon-btn" id="btn-settings-shortcut" title="Настройки" aria-label="Настройки">
-          <span class="icon" data-icon="gear"></span>
+      <div class="header-right header-actions">
+        <button class="icon-btn" id="btn-settings" title="Настройки" aria-label="Настройки">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
         </button>
       </div>
     </header>
 
-    <!-- ── Главное меню ─────────────────────────────────────────── -->
-    <main class="main" id="view-menu">
-      <p class="menu-subtitle" id="menu-subtitle"></p>
-      <div class="menu-grid">
-        <button class="menu-btn" id="menu-create" data-icon="plus"></button>
-        <button class="menu-btn" id="menu-notes" data-icon="notes"></button>
-        <button class="menu-btn" id="menu-search" data-icon="search"></button>
-        <button class="menu-btn" id="menu-settings" data-icon="gear"></button>
-        <button class="menu-btn menu-btn-wide" id="menu-help" data-icon="help"></button>
-      </div>
-    </main>
-
-    <!-- ── Список заметок ───────────────────────────────────────── -->
-    <main class="main hidden" id="view-list">
-      <div class="screen-header">
-        <h2 id="list-title"></h2>
-      </div>
-
-      <div id="notes-list" class="reminders-list"></div>
-
-      <div id="list-empty-state" class="empty-state hidden">
-        <div class="empty-icon" data-icon="notes"></div>
-        <p id="list-empty-title"></p>
-        <p class="muted" id="list-empty-hint"></p>
-      </div>
-
-      <div class="pagination hidden" id="list-pagination">
-        <button class="pg-btn" id="pg-prev" data-icon="chevronLeft"></button>
-        <span class="pg-label" id="pg-label"></span>
-        <button class="pg-btn" id="pg-next" data-icon="chevronRight"></button>
-      </div>
-
-      <button class="btn btn-secondary btn-block" id="list-to-menu" data-icon="home"></button>
-    </main>
-
-    <!-- ── Поиск ─────────────────────────────────────────────────── -->
-    <main class="main hidden" id="view-search">
-      <div class="screen-header">
-        <h2 id="search-title"></h2>
-      </div>
-
-      <div class="search-bar">
-        <input type="text" id="search-input" class="search-input" autocomplete="off">
-        <button class="icon-btn search-go-btn" id="search-go" data-icon="search"></button>
-      </div>
-
-      <p class="search-count muted hidden" id="search-count"></p>
-
-      <div id="search-results" class="reminders-list"></div>
-
-      <div id="search-empty-state" class="empty-state hidden">
-        <div class="empty-icon" data-icon="search"></div>
-        <p id="search-empty-label"></p>
-      </div>
-
-      <button class="btn btn-secondary btn-block" id="search-to-menu" data-icon="home"></button>
-    </main>
-
-    <!-- ── Карточка заметки ─────────────────────────────────────── -->
-    <main class="main hidden" id="view-note">
-      <div class="screen-header">
-        <h2 id="note-detail-title"></h2>
-      </div>
-
-      <div class="note-card">
-        <p class="note-full-text" id="note-detail-text"></p>
-        <div class="note-meta-row">
-          <span id="note-detail-status" class="badge"></span>
+    <main class="main" id="view-list">
+      <div class="toolbar">
+        <div class="search-wrap">
+          <svg class="search-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
+          <input type="search" id="search-input" class="search-input" placeholder="Поиск по тексту…" autocomplete="off" enterkeyhint="search">
+          <button type="button" class="search-clear hidden" id="search-clear" aria-label="Очистить">✕</button>
         </div>
-        <div class="note-meta-row muted" id="note-detail-created"></div>
-        <div class="note-meta-row muted" id="note-detail-remind"></div>
+        <div class="filter-tabs" role="tablist">
+          <button class="tab active" data-filter="all" role="tab">Все</button>
+          <button class="tab" data-filter="active" role="tab">Активные</button>
+          <button class="tab" data-filter="done" role="tab">Отправленные</button>
+        </div>
       </div>
 
-      <div class="note-actions-grid">
-        <button class="btn btn-secondary" id="note-btn-edit" data-icon="pencil"></button>
-        <button class="btn btn-secondary" id="note-btn-remind" data-icon="remind"></button>
-        <button class="btn btn-danger" id="note-btn-delete" data-icon="trash"></button>
-        <button class="btn btn-secondary" id="note-btn-menu" data-icon="home"></button>
+      <div id="reminders-list" class="reminders-list"></div>
+
+      <div id="empty-state" class="empty-state hidden">
+        <div class="empty-icon" id="empty-icon">
+          <svg class="icon-outline empty-svg" width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+        </div>
+        <p id="empty-title">Пока нет напоминаний</p>
+        <p class="muted" id="empty-hint">Нажми «+» чтобы создать первое</p>
       </div>
     </main>
 
-    <!-- ── Настройки ─────────────────────────────────────────────── -->
     <main class="main hidden" id="view-settings">
       <div class="settings-header">
-        <button class="back-btn" id="btn-back-settings">
-          <span class="icon" data-icon="chevronLeft"></span>
-        </button>
-        <h2 id="settings-title-text"></h2>
+        <button class="back-btn" id="btn-back">← Назад</button>
+        <h2>Настройки стиля</h2>
       </div>
 
       <div class="settings-body">
         <section class="settings-section">
-          <h3 id="settings-snooze-title"></h3>
-          <p class="muted settings-hint" id="settings-snooze-hint"></p>
-          <div class="snooze-options" id="snooze-options"></div>
-          <input type="number" id="snooze-custom" class="modal-body-input" min="1" max="1440">
+          <h3>Перенос напоминания</h3>
+          <div class="range-group">
+            <label>
+              <span>Минут до повторного напоминания: <b id="val-snooze">30</b></span>
+              <input type="range" id="set-snoozeMinutes" data-key="snoozeMinutes" min="5" max="180" step="5" value="30">
+            </label>
+          </div>
         </section>
 
         <section class="settings-section">
@@ -210,82 +154,70 @@
 
         <div class="settings-actions">
           <button class="btn btn-secondary" id="btn-reset-style">Сбросить</button>
-          <button class="btn btn-primary" id="btn-save-style"></button>
+          <button class="btn btn-primary" id="btn-save-style">Сохранить</button>
         </div>
       </div>
     </main>
 
-    <!-- ── Помощь ────────────────────────────────────────────────── -->
-    <main class="main hidden" id="view-help">
-      <div class="screen-header">
-        <h2 id="help-title-text"></h2>
-      </div>
-      <ul class="help-list" id="help-list"></ul>
-      <button class="btn btn-secondary btn-block" id="help-to-menu" data-icon="home"></button>
-    </main>
-
-    <!-- FAB (виден только в списке заметок) -->
-    <button class="fab hidden" id="btn-add" title="Добавить" aria-label="Добавить заметку">
-      <span class="icon" data-icon="plus"></span>
+    <button class="fab" id="btn-add" title="Добавить" aria-label="Добавить напоминание">
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+        <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+      </svg>
     </button>
 
-    <!-- Modal: создание / редактирование заметки -->
     <div class="modal-overlay hidden" id="modal">
       <div class="modal">
         <div class="modal-header">
-          <h3 id="modal-title"></h3>
-          <button class="icon-btn" id="modal-close" data-icon="close" aria-label="Закрыть"></button>
+          <h3 id="modal-title">Новое напоминание</h3>
+          <button class="icon-btn" id="modal-close" aria-label="Закрыть">✕</button>
         </div>
-        <form id="note-form" class="modal-body">
+        <form id="reminder-form" class="modal-body">
           <input type="hidden" id="edit-id">
           <label>
-            <span id="note-text-label"></span>
-            <textarea id="f-text" rows="5" maxlength="2000"></textarea>
+            <span>Заголовок</span>
+            <input type="text" id="f-title" required maxlength="120" placeholder="Например: Позвонить маме">
+          </label>
+          <label>
+            <span>Текст</span>
+            <textarea id="f-text" rows="3" maxlength="1000" placeholder="Подробности (необязательно)"></textarea>
           </label>
           <label class="toggle-row">
-            <span id="note-remind-toggle-label"></span>
-            <input type="checkbox" id="f-remind-toggle">
+            <span>Отправлять по таймеру</span>
+            <input type="checkbox" id="f-active">
             <span class="toggle-track"></span>
           </label>
-          <label id="f-datetime-wrap" class="hidden">
-            <span id="note-remind-time-label"></span>
-            <div class="dt-picker" id="f-datetime"></div>
-          </label>
+          <div id="datetime-row" class="datetime-row hidden">
+            <label>
+              <span>Дата и время</span>
+              <div class="dt-picker" id="f-datetime"></div>
+            </label>
+          </div>
           <div class="modal-actions">
-            <button type="button" class="btn btn-secondary" id="modal-cancel"></button>
-            <button type="submit" class="btn btn-primary" id="modal-submit">
-              <span class="btn-icon-swap" id="modal-submit-icon" data-icon="check"></span>
-              <span id="modal-submit-label"></span>
-            </button>
+            <button type="button" class="btn btn-secondary" id="modal-cancel">Отмена</button>
+            <button type="submit" class="btn btn-primary">Сохранить</button>
           </div>
         </form>
       </div>
     </div>
 
-    <!-- Modal: быстрая установка/изменение напоминания -->
-    <div class="modal-overlay hidden" id="modal-remind">
-      <div class="modal">
+    <!-- Read-only view -->
+    <div class="modal-overlay hidden" id="view-modal">
+      <div class="modal view-sheet">
         <div class="modal-header">
-          <h3 id="modal-remind-title"></h3>
-          <button class="icon-btn" id="modal-remind-close" data-icon="close" aria-label="Закрыть"></button>
+          <h3 id="view-title">Заметка</h3>
+          <button class="icon-btn" id="view-close" aria-label="Закрыть">✕</button>
         </div>
-        <div class="modal-body">
-          <label>
-            <span id="note-remind-time-label-2"></span>
-            <div class="dt-picker" id="r-datetime"></div>
-          </label>
+        <div class="modal-body view-body">
+          <p id="view-text" class="view-text"></p>
+          <div id="view-meta" class="card-meta view-meta hidden"></div>
           <div class="modal-actions">
-            <button type="button" class="btn btn-secondary" id="modal-remind-clear"></button>
-            <button type="button" class="btn btn-primary" id="modal-remind-save">
-              <span class="btn-icon-swap" id="remind-submit-icon" data-icon="check"></span>
-              <span id="modal-remind-save-label"></span>
-            </button>
+            <button type="button" class="btn btn-secondary" id="view-delete">Удалить</button>
+            <button type="button" class="btn btn-primary" id="view-edit">Редактировать</button>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- Toast -->
     <div id="toast" class="toast hidden"></div>
   </div>
 
