@@ -73,58 +73,63 @@
     }, ms);
   }
 
+  // Пресеты — только цвета и оформление.
+  // Шрифт и таймер повторной отправки настраиваются отдельно и не сбрасываются.
   const PRESETS = {
     'dark-red': {
       bg: '#0d0d0d', card: '#151515', surface: '#1a1a1a',
       accent: '#ff3333', accentHover: '#ff5555',
       text: '#e0e0e0', muted: '#888888', border: '#333333',
-      radius: '14', transition: '0.35', glass: false, blur: '12',
-      fontFamily: 'system-ui, -apple-system, "Segoe UI", sans-serif',
-      snoozeMinutes: 30
+      radius: '14', transition: '0.35', glass: false, blur: '12'
     },
     midnight: {
       bg: '#0a0a12', card: '#12121e', surface: '#1a1a2e',
       accent: '#6c5ce7', accentHover: '#a29bfe',
       text: '#eef0f5', muted: '#7f8c9b', border: '#2a2a40',
-      radius: '16', transition: '0.3', glass: true, blur: '14',
-      fontFamily: 'system-ui, -apple-system, "Segoe UI", sans-serif',
-      snoozeMinutes: 30
+      radius: '16', transition: '0.3', glass: true, blur: '14'
     },
     emerald: {
       bg: '#0b1210', card: '#121c18', surface: '#1a2820',
       accent: '#00b894', accentHover: '#55efc4',
       text: '#e8f5ef', muted: '#7a9a8c', border: '#2a3c34',
-      radius: '12', transition: '0.35', glass: false, blur: '10',
-      fontFamily: 'system-ui, -apple-system, "Segoe UI", sans-serif',
-      snoozeMinutes: 30
+      radius: '12', transition: '0.35', glass: false, blur: '10'
     },
     violet: {
       bg: '#100b14', card: '#1a1222', surface: '#241830',
       accent: '#a855f7', accentHover: '#c084fc',
       text: '#f3e8ff', muted: '#9b8aad', border: '#3b2a4a',
-      radius: '18', transition: '0.4', glass: true, blur: '16',
-      fontFamily: 'system-ui, -apple-system, "Segoe UI", sans-serif',
-      snoozeMinutes: 30
+      radius: '18', transition: '0.4', glass: true, blur: '16'
     },
     ocean: {
       bg: '#061018', card: '#0c1a24', surface: '#122838',
       accent: '#00cec9', accentHover: '#81ecec',
       text: '#e0f7fa', muted: '#6b9aaa', border: '#1e3a4a',
-      radius: '14', transition: '0.3', glass: false, blur: '12',
-      fontFamily: 'system-ui, -apple-system, "Segoe UI", sans-serif',
-      snoozeMinutes: 30
+      radius: '14', transition: '0.3', glass: false, blur: '12'
     },
     light: {
       bg: '#f5f5f7', card: '#ffffff', surface: '#eeeef0',
       accent: '#e11d48', accentHover: '#fb7185',
       text: '#1a1a1a', muted: '#6b7280', border: '#e5e5e7',
-      radius: '14', transition: '0.3', glass: false, blur: '10',
-      fontFamily: 'system-ui, -apple-system, "Segoe UI", sans-serif',
-      snoozeMinutes: 30
+      radius: '14', transition: '0.3', glass: false, blur: '10'
     }
   };
 
-  function applyTheme(s) {
+  const THEME_CACHE_KEY = 'reminders-theme-v1';
+
+  function cacheTheme(s) {
+    try {
+      const toStore = {
+        bg: s.bg, card: s.card, surface: s.surface,
+        accent: s.accent, accentHover: s.accentHover,
+        text: s.text, muted: s.muted, border: s.border,
+        radius: s.radius, fontFamily: s.fontFamily,
+        transition: s.transition, glass: !!s.glass, blur: s.blur
+      };
+      localStorage.setItem(THEME_CACHE_KEY, JSON.stringify(toStore));
+    } catch (_) {}
+  }
+
+  function applyTheme(s, { skipCache = false } = {}) {
     const root = document.documentElement;
     const map = {
       bg: '--bg', card: '--card', surface: '--surface',
@@ -164,11 +169,13 @@
     const f = document.getElementById('set-fontFamily');
     if (f && s.fontFamily) f.value = s.fontFamily;
     const sn = document.getElementById('set-snoozeMinutes');
-    if (sn) {
+    if (sn && s.snoozeMinutes !== undefined) {
       sn.value = s.snoozeMinutes || 30;
       const vs = $('#val-snooze');
       if (vs) vs.textContent = sn.value;
     }
+
+    if (!skipCache) cacheTheme(s);
 
     if (tg) {
       try {
@@ -184,7 +191,11 @@
       applyTheme(settings);
     } catch (e) {
       console.warn('Settings load failed', e);
-      settings = { ...PRESETS['dark-red'] };
+      settings = {
+        ...PRESETS['dark-red'],
+        fontFamily: 'system-ui, -apple-system, "Segoe UI", sans-serif',
+        snoozeMinutes: 30
+      };
       applyTheme(settings);
     }
   }
@@ -244,7 +255,13 @@
       btn.addEventListener('click', () => {
         const p = PRESETS[btn.dataset.preset];
         if (p) {
-          settings = { ...p };
+          // Пресет меняет только стиль; шрифт и таймер остаются как были
+          settings = {
+            ...settings,
+            ...p,
+            fontFamily: settings.fontFamily,
+            snoozeMinutes: settings.snoozeMinutes
+          };
           applyTheme(settings);
           toast(T.toastPreset || 'Пресет применён');
         }
@@ -253,7 +270,12 @@
 
     $('#btn-save-style').addEventListener('click', saveSettings);
     $('#btn-reset-style').addEventListener('click', () => {
-      settings = { ...PRESETS['dark-red'] };
+      // Сброс стиля, но сохраняем выбранный шрифт и таймер
+      settings = {
+        ...PRESETS['dark-red'],
+        fontFamily: settings.fontFamily || 'system-ui, -apple-system, "Segoe UI", sans-serif',
+        snoozeMinutes: settings.snoozeMinutes || 30
+      };
       applyTheme(settings);
       toast(T.toastReset || 'Сброшено');
     });
