@@ -257,18 +257,35 @@
     }));
   }
 
+  /**
+   * Cyclic scroll wheel: after 00 you can scroll to max (e.g. 59) in one step.
+   * Renders 3 copies of 0..max and keeps the scroll in the middle band.
+   */
   function buildWheel(el, max, initial, onSettle) {
+    const count = max + 1; // e.g. 60 for minutes, 24 for hours
+    const COPIES = 3;
+    const midOffset = count; // start of middle copy
+
     el.innerHTML = '';
     el.classList.add('dt-wheel');
-    for (let i = 0; i <= max; i++) {
-      const it = document.createElement('div');
-      it.className = 'dt-wheel-item';
-      it.textContent = pad2(i);
-      it.dataset.val = String(i);
-      it.addEventListener('click', () => {
-        el.scrollTo({ top: i * WHEEL_ITEM_H, behavior: 'smooth' });
-      });
-      el.appendChild(it);
+    el.style.scrollBehavior = 'auto';
+
+    for (let copy = 0; copy < COPIES; copy++) {
+      for (let i = 0; i < count; i++) {
+        const it = document.createElement('div');
+        it.className = 'dt-wheel-item';
+        it.textContent = pad2(i);
+        it.dataset.val = String(i);
+        it.dataset.idx = String(copy * count + i);
+        it.addEventListener('click', () => {
+          // Jump within middle band for speed
+          const target = (midOffset + i) * WHEEL_ITEM_H;
+          el.scrollTop = target;
+          markActive(i);
+          onSettle(i);
+        });
+        el.appendChild(it);
+      }
     }
 
     function markActive(val) {
@@ -277,20 +294,46 @@
       });
     }
 
+    function normalizeScroll() {
+      const raw = Math.round(el.scrollTop / WHEEL_ITEM_H);
+      let val = ((raw % count) + count) % count;
+
+      // Keep scroll position in the middle copy so user can always go either way
+      const middleTop = (midOffset + val) * WHEEL_ITEM_H;
+      if (Math.abs(el.scrollTop - middleTop) > WHEEL_ITEM_H * 0.5) {
+        el.scrollTop = middleTop;
+      }
+      return val;
+    }
+
     let settleTimer;
+    let lastVal = initial;
+
     el.addEventListener('scroll', () => {
+      const raw = Math.round(el.scrollTop / WHEEL_ITEM_H);
+      const val = ((raw % count) + count) % count;
+      if (val !== lastVal) {
+        lastVal = val;
+        markActive(val);
+        onSettle(val);
+      }
       clearTimeout(settleTimer);
       settleTimer = setTimeout(() => {
-        const idx = Math.min(max, Math.max(0, Math.round(el.scrollTop / WHEEL_ITEM_H)));
-        markActive(idx);
-        onSettle(idx);
-      }, 100);
-    });
+        const v = normalizeScroll();
+        lastVal = v;
+        markActive(v);
+        onSettle(v);
+        // Snap exactly to item
+        el.scrollTop = (midOffset + v) * WHEEL_ITEM_H;
+      }, 40);
+    }, { passive: true });
 
-    // Position after layout so clientHeight/padding are correct.
     requestAnimationFrame(() => {
-      el.scrollTop = initial * WHEEL_ITEM_H;
-      markActive(initial);
+      const v = Math.min(max, Math.max(0, initial | 0));
+      el.scrollTop = (midOffset + v) * WHEEL_ITEM_H;
+      lastVal = v;
+      markActive(v);
+      onSettle(v);
     });
   }
 
@@ -298,7 +341,7 @@
     ensureSheet();
     const base = initialVal && !isNaN(new Date(initialVal).getTime())
       ? new Date(initialVal)
-      : new Date(Date.now() + 3600000);
+      : new Date(); // локальные дата и время пользователя
 
     let selYear = base.getFullYear();
     let selMonth = base.getMonth();

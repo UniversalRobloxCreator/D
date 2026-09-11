@@ -1,14 +1,10 @@
 /* ═══════════════════════════════════════════════════════════════
-   Reminders / Notes Mini App — Client logic
+   Reminders Mini App — Client logic (optimized)
    ═══════════════════════════════════════════════════════════════ */
 
 (() => {
   'use strict';
 
-  const T = window.TEXTS;
-  const I = window.ICONS;
-
-  // ─── Telegram WebApp ────────────────────────────────────────
   const tg = window.Telegram?.WebApp;
   if (tg) {
     tg.ready();
@@ -18,46 +14,46 @@
       tg.setBackgroundColor('#0d0d0d');
     } catch (_) {}
   }
+
   const initData = tg?.initData || '';
+  const T = window.APP_TEXTS || {};
 
-  // ─── State ──────────────────────────────────────────────────
-  let notes = [];
-  let searchResults = [];
+  let reminders = [];
+  let currentFilter = 'all';
+  let searchQuery = '';
   let settings = {};
-  let currentSnooze = window.DEFAULT_SNOOZE_MINUTES;
   let editingId = null;
-  let currentNoteId = null;
-  let listPage = 1;
-  const PAGE_SIZE = 5;
-  let viewStack = ['menu'];
+  let renderPending = false;
 
-  // ─── DOM ────────────────────────────────────────────────────
   const $ = (sel) => document.querySelector(sel);
   const $$ = (sel) => document.querySelectorAll(sel);
 
-  const views = {
-    menu: $('#view-menu'),
-    list: $('#view-list'),
-    search: $('#view-search'),
-    note: $('#view-note'),
-    settings: $('#view-settings'),
-    help: $('#view-help'),
-  };
+  const listEl = $('#reminders-list');
+  const emptyEl = $('#empty-state');
+  const emptyTitle = $('#empty-title');
+  const emptyHint = $('#empty-hint');
+  const emptyIcon = $('#empty-icon');
+  const viewList = $('#view-list');
+  const viewSettings = $('#view-settings');
   const modal = $('#modal');
-  const modalRemind = $('#modal-remind');
-  const form = $('#note-form');
+  const form = $('#reminder-form');
   const toastEl = $('#toast');
-  const fab = $('#btn-add');
+  const searchInput = $('#search-input');
+  const searchClear = $('#search-clear');
 
-  // ─── API helpers ────────────────────────────────────────────
   async function api(path, options = {}) {
-    const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
+    const headers = {
+      'Content-Type': 'application/json',
+      ...(options.headers || {})
+    };
     if (initData) headers['X-Telegram-Init-Data'] = initData;
+
     const res = await fetch(path, {
       ...options,
       headers,
-      body: options.body ? JSON.stringify(options.body) : undefined,
+      body: options.body ? JSON.stringify(options.body) : undefined
     });
+
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.error || res.statusText);
@@ -65,598 +61,609 @@
     return res.json();
   }
 
-  // ─── Toast ──────────────────────────────────────────────────
   let toastTimer;
-  function toast(msg, ms = 2400) {
+  function toast(msg, ms = 2200) {
     toastEl.textContent = msg;
     toastEl.classList.remove('hidden');
     requestAnimationFrame(() => toastEl.classList.add('show'));
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => {
       toastEl.classList.remove('show');
-      setTimeout(() => toastEl.classList.add('hidden'), 350);
+      setTimeout(() => toastEl.classList.add('hidden'), 280);
     }, ms);
   }
 
-  // ─── Иконки (только контурные, пункт 6) ────────────────────
-  function icon(name) {
-    return I[name] || '';
-  }
-
-  function setIconOnly(el, name) {
-    if (!el) return;
-    el.innerHTML = `<span class="icon">${icon(name)}</span>`;
-  }
-
-  function setIconLabel(el, name, label) {
-    if (!el) return;
-    el.innerHTML = `<span class="icon">${icon(name)}</span><span class="btn-label">${label}</span>`;
-  }
-
-  // Индикатор загрузки: часы -> галочка (пункт 3), через edit на самой иконке.
-  function playLoading(iconEl) {
-    if (!iconEl) return () => {};
-    iconEl.innerHTML = icon('hourglass');
-    iconEl.classList.add('icon-spin');
-    return function done(ok = true) {
-      iconEl.classList.remove('icon-spin');
-      iconEl.innerHTML = icon(ok ? 'check' : 'close');
-      setTimeout(() => { iconEl.innerHTML = icon('check'); }, 900);
-    };
-  }
-
-  function applyStaticTexts() {
-    $('#menu-subtitle').textContent = T.menuSubtitle;
-    setIconLabel($('#menu-create'), 'plus', T.btnCreate);
-    setIconLabel($('#menu-notes'), 'notes', T.btnNotes);
-    setIconLabel($('#menu-search'), 'search', T.btnSearch);
-    setIconLabel($('#menu-settings'), 'gear', T.btnSettings);
-    setIconLabel($('#menu-help'), 'help', T.btnHelp);
-
-    setIconOnly($('#btn-home'), 'notes');
-    setIconOnly($('#btn-settings-shortcut'), 'gear');
-    setIconOnly($('#btn-add'), 'plus');
-    setIconOnly($('#pg-prev'), 'chevronLeft');
-    setIconOnly($('#pg-next'), 'chevronRight');
-    setIconOnly($('#search-go'), 'search');
-    setIconOnly($('#modal-close'), 'close');
-    setIconOnly($('#modal-remind-close'), 'close');
-    setIconOnly($('#list-empty-state .empty-icon'), 'notes');
-    setIconOnly($('#search-empty-state .empty-icon'), 'search');
-
-    $('#list-title').textContent = T.notesListTitle;
-    $('#list-empty-title').textContent = T.listEmptyTitle;
-    $('#list-empty-hint').textContent = T.listEmptyHint;
-    setIconLabel($('#list-to-menu'), 'home', T.btnMenu);
-
-    $('#search-title').textContent = T.searchTitle;
-    $('#search-input').placeholder = T.searchPlaceholder;
-    $('#search-empty-label').textContent = T.searchHint;
-    setIconLabel($('#search-to-menu'), 'home', T.btnMenu);
-
-    $('#note-detail-title').textContent = '';
-    setIconLabel($('#note-btn-edit'), 'pencil', T.btnEdit);
-    setIconLabel($('#note-btn-remind'), 'remind', T.btnRemind);
-    setIconLabel($('#note-btn-delete'), 'trash', T.btnDelete);
-    setIconLabel($('#note-btn-menu'), 'home', T.btnMenu);
-
-    setIconLabel($('#btn-back-settings'), 'chevronLeft', T.btnBack);
-    $('#settings-title-text').textContent = T.settingsTitle;
-    $('#settings-snooze-title').textContent = T.settingsSnoozeTitle;
-    $('#settings-snooze-hint').textContent = T.settingsSnoozeHint;
-    $('#snooze-custom').placeholder = T.settingsSnoozeCustomPlaceholder;
-    $('#btn-save-style').textContent = T.btnSave;
-
-    $('#help-title-text').textContent = T.helpTitle;
-    setIconLabel($('#help-to-menu'), 'home', T.btnMenu);
-    $('#help-list').innerHTML = T.helpBody.map((li) => `<li>${escape(li)}</li>`).join('');
-
-    $('#note-text-label').textContent = T.noteTextPlaceholder;
-    $('#f-text').placeholder = T.noteTextPlaceholder;
-    $('#note-remind-toggle-label').textContent = T.noteRemindToggle;
-    $('#note-remind-time-label').textContent = T.noteRemindTitle;
-    $('#note-remind-time-label-2').textContent = T.noteRemindTitle;
-    $('#modal-cancel').textContent = T.btnCancel;
-    $('#modal-submit-label').textContent = T.btnSave;
-    setIconOnly($('#modal-submit-icon'), 'check');
-
-    $('#modal-remind-title').textContent = T.btnRemind;
-    $('#modal-remind-clear').textContent = T.btnClearRemind;
-    $('#modal-remind-save-label').textContent = T.btnSave;
-    setIconOnly($('#remind-submit-icon'), 'check');
-  }
-
-  function escape(s) {
-    const d = document.createElement('div');
-    d.textContent = s || '';
-    return d.innerHTML;
-  }
-
-  // ─── Навигация между экранами (плавная смена, пункт 3) ──────
-  function renderView(name) {
-    Object.entries(views).forEach(([key, el]) => {
-      if (key === name) {
-        el.classList.remove('hidden');
-        requestAnimationFrame(() => el.classList.add('active'));
-      } else {
-        el.classList.remove('active');
-        el.classList.add('hidden');
-      }
-    });
-    fab.classList.toggle('hidden', name !== 'list');
-    if (tg) {
-      if (name === 'menu') tg.BackButton.hide();
-      else tg.BackButton.show();
-    }
-  }
-
-  function goToMenu() {
-    viewStack = ['menu'];
-    renderView('menu');
-  }
-
-  function navigateTo(name) {
-    viewStack.push(name);
-    renderView(name);
-  }
-
-  function goBack() {
-    if (!modal.classList.contains('hidden')) return closeModal();
-    if (!modalRemind.classList.contains('hidden')) return closeRemindModal();
-    if (viewStack.length > 1) {
-      viewStack.pop();
-      renderView(viewStack[viewStack.length - 1]);
-    } else if (tg) {
-      tg.close();
-    }
-  }
-
-  // ─── Settings / Theme ───────────────────────────────────────
   const PRESETS = {
-    'dark-red': { bg: '#0d0d0d', card: '#151515', surface: '#1a1a1a', accent: '#ff3333', accentHover: '#ff5555', text: '#e0e0e0', muted: '#888888', border: '#333333', radius: '14', transition: '0.35', glass: false, blur: '12', fontFamily: 'system-ui, -apple-system, "Segoe UI", sans-serif' },
-    midnight: { bg: '#0a0e17', card: '#111827', surface: '#1f2937', accent: '#3b82f6', accentHover: '#60a5fa', text: '#e5e7eb', muted: '#9ca3af', border: '#1e293b', radius: '12', transition: '0.3', glass: false, blur: '10', fontFamily: 'system-ui, -apple-system, "Segoe UI", sans-serif' },
-    emerald: { bg: '#0a1210', card: '#0f1f1a', surface: '#163028', accent: '#10b981', accentHover: '#34d399', text: '#d1fae5', muted: '#6ee7b7', border: '#134e3a', radius: '16', transition: '0.4', glass: true, blur: '14', fontFamily: 'system-ui, -apple-system, "Segoe UI", sans-serif' },
-    violet: { bg: '#0f0a14', card: '#1a1225', surface: '#251833', accent: '#a855f7', accentHover: '#c084fc', text: '#f3e8ff', muted: '#c4b5fd', border: '#3b0764', radius: '18', transition: '0.35', glass: true, blur: '16', fontFamily: 'system-ui, -apple-system, "Segoe UI", sans-serif' },
-    ocean: { bg: '#061018', card: '#0c1e2b', surface: '#123347', accent: '#06b6d4', accentHover: '#22d3ee', text: '#e0f7fa', muted: '#67e8f9', border: '#164e63', radius: '12', transition: '0.3', glass: false, blur: '10', fontFamily: 'system-ui, -apple-system, "Segoe UI", sans-serif' },
-    light: { bg: '#f5f5f7', card: '#ffffff', surface: '#f0f0f2', accent: '#ff3333', accentHover: '#e62e2e', text: '#1a1a1a', muted: '#666666', border: '#e0e0e0', radius: '14', transition: '0.3', glass: false, blur: '8', fontFamily: 'system-ui, -apple-system, "Segoe UI", sans-serif' },
+    'dark-red': {
+      bg: '#0d0d0d', card: '#151515', surface: '#1a1a1a',
+      accent: '#ff3333', accentHover: '#ff5555',
+      text: '#e0e0e0', muted: '#888888', border: '#333333',
+      radius: '14', transition: '0.35', glass: false, blur: '12',
+      fontFamily: 'system-ui, -apple-system, "Segoe UI", sans-serif',
+      snoozeMinutes: 30
+    },
+    midnight: {
+      bg: '#0a0a12', card: '#12121e', surface: '#1a1a2e',
+      accent: '#6c5ce7', accentHover: '#a29bfe',
+      text: '#eef0f5', muted: '#7f8c9b', border: '#2a2a40',
+      radius: '16', transition: '0.3', glass: true, blur: '14',
+      fontFamily: 'system-ui, -apple-system, "Segoe UI", sans-serif',
+      snoozeMinutes: 30
+    },
+    emerald: {
+      bg: '#0b1210', card: '#121c18', surface: '#1a2820',
+      accent: '#00b894', accentHover: '#55efc4',
+      text: '#e8f5ef', muted: '#7a9a8c', border: '#2a3c34',
+      radius: '12', transition: '0.35', glass: false, blur: '10',
+      fontFamily: 'system-ui, -apple-system, "Segoe UI", sans-serif',
+      snoozeMinutes: 30
+    },
+    violet: {
+      bg: '#100b14', card: '#1a1222', surface: '#241830',
+      accent: '#a855f7', accentHover: '#c084fc',
+      text: '#f3e8ff', muted: '#9b8aad', border: '#3b2a4a',
+      radius: '18', transition: '0.4', glass: true, blur: '16',
+      fontFamily: 'system-ui, -apple-system, "Segoe UI", sans-serif',
+      snoozeMinutes: 30
+    },
+    ocean: {
+      bg: '#061018', card: '#0c1a24', surface: '#122838',
+      accent: '#00cec9', accentHover: '#81ecec',
+      text: '#e0f7fa', muted: '#6b9aaa', border: '#1e3a4a',
+      radius: '14', transition: '0.3', glass: false, blur: '12',
+      fontFamily: 'system-ui, -apple-system, "Segoe UI", sans-serif',
+      snoozeMinutes: 30
+    },
+    light: {
+      bg: '#f5f5f7', card: '#ffffff', surface: '#eeeef0',
+      accent: '#e11d48', accentHover: '#fb7185',
+      text: '#1a1a1a', muted: '#6b7280', border: '#e5e5e7',
+      radius: '14', transition: '0.3', glass: false, blur: '10',
+      fontFamily: 'system-ui, -apple-system, "Segoe UI", sans-serif',
+      snoozeMinutes: 30
+    }
   };
 
   function applyTheme(s) {
     const root = document.documentElement;
-    root.style.setProperty('--bg', s.bg || '#0d0d0d');
-    root.style.setProperty('--card', s.card || '#151515');
-    root.style.setProperty('--surface', s.surface || '#1a1a1a');
-    root.style.setProperty('--accent', s.accent || '#ff3333');
-    root.style.setProperty('--accent-hover', s.accentHover || '#ff5555');
-    root.style.setProperty('--text', s.text || '#e0e0e0');
-    root.style.setProperty('--muted', s.muted || '#888888');
-    root.style.setProperty('--border', s.border || '#333333');
-    root.style.setProperty('--radius', (s.radius || 14) + 'px');
-    root.style.setProperty('--transition', (s.transition || 0.35) + 's');
-    root.style.setProperty('--blur', (s.blur || 12) + 'px');
-    root.style.setProperty('--font', s.fontFamily || 'system-ui, sans-serif');
+    const map = {
+      bg: '--bg', card: '--card', surface: '--surface',
+      accent: '--accent', accentHover: '--accent-hover',
+      text: '--text', muted: '--muted', border: '--border',
+      radius: '--radius', fontFamily: '--font',
+      transition: '--transition', blur: '--blur'
+    };
+    Object.entries(map).forEach(([k, cssVar]) => {
+      if (s[k] === undefined) return;
+      let v = s[k];
+      if (k === 'radius') v = `${v}px`;
+      if (k === 'transition') v = `${v}s`;
+      if (k === 'blur') v = `${v}px`;
+      root.style.setProperty(cssVar, v);
+    });
     document.body.style.fontFamily = s.fontFamily || '';
     document.body.classList.toggle('glass', !!s.glass);
 
-    const map = { bg: 'set-bg', card: 'set-card', surface: 'set-surface', accent: 'set-accent', accentHover: 'set-accentHover', text: 'set-text', muted: 'set-muted', border: 'set-border' };
-    Object.entries(map).forEach(([k, id]) => {
+    const colorMap = {
+      bg: 'set-bg', card: 'set-card', surface: 'set-surface',
+      accent: 'set-accent', accentHover: 'set-accentHover',
+      text: 'set-text', muted: 'set-muted', border: 'set-border'
+    };
+    Object.entries(colorMap).forEach(([k, id]) => {
       const el = document.getElementById(id);
       if (el && s[k]) el.value = s[k];
     });
-    const r = $('#set-radius'); if (r) { r.value = s.radius || 14; $('#val-radius').textContent = r.value; }
-    const t = $('#set-transition'); if (t) { t.value = s.transition || 0.35; $('#val-transition').textContent = t.value; }
-    const b = $('#set-blur'); if (b) { b.value = s.blur || 12; $('#val-blur').textContent = b.value; }
-    const g = $('#set-glass'); if (g) g.checked = !!s.glass;
-    const f = $('#set-fontFamily'); if (f && s.fontFamily) f.value = s.fontFamily;
-  }
+    const r = document.getElementById('set-radius');
+    if (r) { r.value = s.radius || 14; const vr = $('#val-radius'); if (vr) vr.textContent = r.value; }
+    const t = document.getElementById('set-transition');
+    if (t) { t.value = s.transition || 0.35; const vt = $('#val-transition'); if (vt) vt.textContent = t.value; }
+    const b = document.getElementById('set-blur');
+    if (b) { b.value = s.blur || 12; const vb = $('#val-blur'); if (vb) vb.textContent = b.value; }
+    const g = document.getElementById('set-glass');
+    if (g) g.checked = !!s.glass;
+    const f = document.getElementById('set-fontFamily');
+    if (f && s.fontFamily) f.value = s.fontFamily;
+    const sn = document.getElementById('set-snoozeMinutes');
+    if (sn) {
+      sn.value = s.snoozeMinutes || 30;
+      const vs = $('#val-snooze');
+      if (vs) vs.textContent = sn.value;
+    }
 
-  function renderSnoozeOptions() {
-    const wrap = $('#snooze-options');
-    wrap.innerHTML = window.SNOOZE_OPTIONS.map((m) =>
-      `<button type="button" class="snooze-pill${m === currentSnooze ? ' active' : ''}" data-mins="${m}">${m} мин</button>`
-    ).join('');
-    const isPreset = window.SNOOZE_OPTIONS.includes(currentSnooze);
-    $('#snooze-custom').value = isPreset ? '' : currentSnooze;
-
-    wrap.querySelectorAll('.snooze-pill').forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        currentSnooze = Number(btn.dataset.mins);
-        renderSnoozeOptions();
-        await saveSnooze();
-      });
-    });
-  }
-
-  async function saveSnooze() {
-    try {
-      settings = await api('/api/settings', { method: 'POST', body: { snoozeMinutes: currentSnooze } });
-      currentSnooze = settings.snoozeMinutes;
-      toast(T.settingsSnoozeSaved);
-    } catch (e) {
-      toast(T.toastErrorPrefix + e.message);
+    if (tg) {
+      try {
+        tg.setHeaderColor(s.bg || '#0d0d0d');
+        tg.setBackgroundColor(s.bg || '#0d0d0d');
+      } catch (_) {}
     }
   }
 
   async function loadSettings() {
     try {
       settings = await api('/api/settings');
+      applyTheme(settings);
     } catch (e) {
-      console.warn('Settings load failed, using defaults', e);
-      settings = { ...PRESETS['dark-red'], snoozeMinutes: window.DEFAULT_SNOOZE_MINUTES };
+      console.warn('Settings load failed', e);
+      settings = { ...PRESETS['dark-red'] };
+      applyTheme(settings);
     }
-    currentSnooze = settings.snoozeMinutes || window.DEFAULT_SNOOZE_MINUTES;
-    applyTheme(settings);
-    renderSnoozeOptions();
   }
 
-  async function saveStyleSettings() {
+  async function saveSettings() {
     const payload = {
-      bg: $('#set-bg').value, card: $('#set-card').value, surface: $('#set-surface').value,
-      accent: $('#set-accent').value, accentHover: $('#set-accentHover').value,
-      text: $('#set-text').value, muted: $('#set-muted').value, border: $('#set-border').value,
-      radius: $('#set-radius').value, transition: $('#set-transition').value, blur: $('#set-blur').value,
-      glass: $('#set-glass').checked, fontFamily: $('#set-fontFamily').value,
+      bg: $('#set-bg').value,
+      card: $('#set-card').value,
+      surface: $('#set-surface').value,
+      accent: $('#set-accent').value,
+      accentHover: $('#set-accentHover').value,
+      text: $('#set-text').value,
+      muted: $('#set-muted').value,
+      border: $('#set-border').value,
+      radius: $('#set-radius').value,
+      transition: $('#set-transition').value,
+      blur: $('#set-blur').value,
+      glass: $('#set-glass').checked,
+      fontFamily: $('#set-fontFamily').value,
+      snoozeMinutes: Number($('#set-snoozeMinutes').value) || 30
     };
     try {
       settings = await api('/api/settings', { method: 'POST', body: payload });
       applyTheme(settings);
-      toast(T.toastStyleSaved);
+      toast(T.toastStyleSaved || 'Стиль сохранён ✨');
     } catch (e) {
-      toast(T.toastErrorPrefix + e.message);
+      toast((T.toastSaveFail || 'Ошибка') + ': ' + e.message);
     }
   }
 
   function bindSettingsLive() {
-    $$('[data-key]').forEach((el) => {
+    $$('[data-key]').forEach(el => {
       const evt = el.type === 'checkbox' || el.tagName === 'SELECT' ? 'change' : 'input';
       el.addEventListener(evt, () => {
         const key = el.dataset.key;
         let val = el.type === 'checkbox' ? el.checked : el.value;
-        if (key === 'radius') $('#val-radius').textContent = val;
-        if (key === 'transition') $('#val-transition').textContent = val;
-        if (key === 'blur') $('#val-blur').textContent = val;
-        const temp = { ...settings, [key]: val };
+        if (key === 'radius') { const v = $('#val-radius'); if (v) v.textContent = val; }
+        if (key === 'transition') { const v = $('#val-transition'); if (v) v.textContent = val; }
+        if (key === 'blur') { const v = $('#val-blur'); if (v) v.textContent = val; }
+        if (key === 'snoozeMinutes') { const v = $('#val-snooze'); if (v) v.textContent = val; }
+        const temp = { ...settings, [key]: key === 'snoozeMinutes' ? Number(val) : val };
         applyTheme(temp);
         settings = temp;
+        // Auto-save snooze so bot inline buttons use the new value immediately
+        if (key === 'snoozeMinutes') {
+          clearTimeout(window.__snoozeSaveTimer);
+          window.__snoozeSaveTimer = setTimeout(() => {
+            api('/api/settings', { method: 'POST', body: { snoozeMinutes: Number(val) || 30 } })
+              .then(s => { settings = { ...settings, ...s }; })
+              .catch(() => {});
+          }, 400);
+        }
       });
     });
 
-    $$('.preset-btn').forEach((btn) => {
+    $$('.preset-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         const p = PRESETS[btn.dataset.preset];
-        if (p) { settings = { ...settings, ...p }; applyTheme(settings); }
+        if (p) {
+          settings = { ...p };
+          applyTheme(settings);
+          toast(T.toastPreset || 'Пресет применён');
+        }
       });
     });
 
-    $('#btn-save-style').addEventListener('click', saveStyleSettings);
+    $('#btn-save-style').addEventListener('click', saveSettings);
     $('#btn-reset-style').addEventListener('click', () => {
-      settings = { ...settings, ...PRESETS['dark-red'] };
+      settings = { ...PRESETS['dark-red'] };
       applyTheme(settings);
-    });
-
-    $('#snooze-custom').addEventListener('change', async () => {
-      const v = Number($('#snooze-custom').value);
-      if (Number.isFinite(v) && v > 0) {
-        currentSnooze = Math.round(v);
-        renderSnoozeOptions();
-        await saveSnooze();
-      }
+      toast(T.toastReset || 'Сброшено');
     });
   }
 
-  // ─── Заметки: список / пагинация ─────────────────────────────
-  async function loadNotes() {
+  async function loadReminders() {
     try {
-      notes = await api('/api/notes');
+      reminders = await api('/api/reminders');
+      scheduleRender();
     } catch (e) {
-      toast(T.toastLoadFailed + e.message);
-      notes = [];
+      console.error(e);
+      toast((T.toastLoadFail || 'Не удалось загрузить') + ': ' + e.message);
+      reminders = [];
+      scheduleRender();
     }
-    listPage = 1;
-    renderNotesPage();
+  }
+
+  function filtered() {
+    let items = reminders;
+    if (currentFilter === 'active') items = items.filter(r => r.active && !r.sent);
+    else if (currentFilter === 'done') items = items.filter(r => r.sent);
+
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase();
+      items = items.filter(r =>
+        (r.title && r.title.toLowerCase().includes(q)) ||
+        (r.text && r.text.toLowerCase().includes(q))
+      );
+    }
+    return items;
   }
 
   function formatDt(iso) {
-    if (!iso) return T.noteDetailNoRemind;
     try {
-      const d = new Date(iso);
-      return d.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-    } catch { return iso; }
+      return new Date(iso).toLocaleString('ru-RU', {
+        day: '2-digit', month: '2-digit', year: 'numeric',
+        hour: '2-digit', minute: '2-digit'
+      });
+    } catch {
+      return iso;
+    }
   }
 
-  function noteRow(n) {
-    const row = document.createElement('article');
-    row.className = 'reminder-card' + (n.sent ? ' sent' : '');
-    row.dataset.id = n.id;
-    row.innerHTML = `
-      <div class="accent-bar"></div>
-      <div class="card-top">
-        <h3 class="card-title">${escape(n.title)}</h3>
-      </div>
-      <div class="card-meta">
-        <span class="badge ${n.sent ? 'sent' : ''}">${n.sent ? T.noteDetailStatusSent : (n.active ? T.noteDetailStatusActive : T.noteDetailStatusPaused)}</span>
-        <span>${n.remindAt ? formatDt(n.remindAt) : ''}</span>
-      </div>`;
-    row.addEventListener('click', () => openNoteDetail(n.id));
-    return row;
+  function escape(s) {
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
   }
 
-  function renderNotesPage() {
-    const listEl = $('#notes-list');
-    const emptyEl = $('#list-empty-state');
-    const pag = $('#list-pagination');
-    listEl.innerHTML = '';
+  function scheduleRender() {
+    if (renderPending) return;
+    renderPending = true;
+    requestAnimationFrame(() => {
+      renderPending = false;
+      renderList();
+    });
+  }
 
-    if (!notes.length) {
+  function renderList() {
+    const items = filtered();
+    const frag = document.createDocumentFragment();
+
+    if (!items.length) {
+      listEl.innerHTML = '';
       emptyEl.classList.remove('hidden');
-      pag.classList.add('hidden');
+      const isSearch = !!searchQuery;
+      emptyIcon.innerHTML = isSearch
+        ? `<svg class="icon-outline empty-svg" width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>`
+        : `<svg class="icon-outline empty-svg" width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>`;
+      emptyTitle.textContent = isSearch
+        ? (T.emptySearch || 'Ничего не найдено')
+        : (T.emptyTitle || 'Пока нет напоминаний');
+      emptyHint.textContent = isSearch
+        ? (T.emptySearchHint || 'Попробуйте другой запрос')
+        : (T.emptyHint || 'Нажми «+» чтобы создать первое');
       return;
     }
     emptyEl.classList.add('hidden');
 
-    const totalPages = Math.max(1, Math.ceil(notes.length / PAGE_SIZE));
-    listPage = Math.min(listPage, totalPages);
-    const start = (listPage - 1) * PAGE_SIZE;
-    notes.slice(start, start + PAGE_SIZE).forEach((n) => listEl.appendChild(noteRow(n)));
+    const maxAnim = 8;
+    items.forEach((r, i) => {
+      const card = document.createElement('article');
+      card.className = 'reminder-card' + (r.sent ? ' sent' : '');
+      if (i < maxAnim) card.style.animationDelay = `${i * 0.04}s`;
 
-    pag.classList.toggle('hidden', totalPages <= 1);
-    $('#pg-label').textContent = T.pageLabel(listPage, totalPages);
-    $('#pg-prev').disabled = listPage <= 1;
-    $('#pg-next').disabled = listPage >= totalPages;
+      // Время и надпись — только у заметок с напоминанием (активных или уже отправленных)
+      const isReminder = !!(r.active || r.sent);
+      const badgeClass = r.sent ? 'badge sent' : 'badge';
+      const badgeText = r.sent
+        ? (T.badgeSent || 'Отправлено')
+        : (T.badgeActive || 'Напоминание');
+
+      const iconEdit = `<svg class="icon-outline" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>`;
+      const iconDel = `<svg class="icon-outline" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>`;
+
+      const metaHtml = isReminder ? `
+        <div class="card-meta">
+          <span class="${badgeClass}">${badgeText}</span>
+          <time datetime="${escape(r.datetime)}">${formatDt(r.datetime)}</time>
+        </div>` : '';
+
+      // preview text truncated for list
+      const preview = r.text
+        ? `<p class="card-text">${escape(r.text.length > 120 ? r.text.slice(0, 120) + '…' : r.text)}</p>`
+        : '';
+
+      card.dataset.id = r.id;
+      card.innerHTML = `
+        <div class="accent-bar"></div>
+        <div class="card-top">
+          <h3 class="card-title">${escape(r.title)}</h3>
+          <div class="card-actions">
+            <button type="button" data-action="edit" data-id="${r.id}" title="${T.editTitle || 'Редактировать'}" aria-label="${T.editTitle || 'Редактировать'}">
+              ${iconEdit}
+            </button>
+            <button type="button" data-action="delete" data-id="${r.id}" title="${T.deleteTitle || 'Удалить'}" aria-label="${T.deleteTitle || 'Удалить'}">
+              ${iconDel}
+            </button>
+          </div>
+        </div>
+        ${preview}
+        ${metaHtml}
+      `;
+      frag.appendChild(card);
+    });
+
+    listEl.innerHTML = '';
+    listEl.appendChild(frag);
   }
 
-  // ─── Карточка заметки ─────────────────────────────────────────
-  function findNote(id) {
-    return notes.find((n) => n.id === id) || searchResults.find((n) => n.id === id);
+  function toLocalStr(d) {
+    const pad = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
   }
 
-  function openNoteDetail(id) {
-    const n = findNote(id);
-    if (!n) { toast(T.noteNotFoundToast || 'Заметка не найдена'); return; }
-    currentNoteId = id;
-    $('#note-detail-title').textContent = n.title;
-    $('#note-detail-text').textContent = n.text;
-    $('#note-detail-status').textContent = n.sent ? T.noteDetailStatusSent : (n.active ? T.noteDetailStatusActive : T.noteDetailStatusPaused);
-    $('#note-detail-status').className = 'badge' + (n.sent ? ' sent' : '');
-    $('#note-detail-created').textContent = `${T.noteDetailCreatedLabel} ${formatDt(n.createdAt)}`;
-    $('#note-detail-remind').textContent = `${T.noteDetailRemindLabel} ${n.remindAt ? formatDt(n.remindAt) : T.noteDetailNoRemind}`;
-    navigateTo('note');
+  function setDatetimeVisible(on) {
+    const row = $('#datetime-row');
+    if (!row) return;
+    row.classList.toggle('hidden', !on);
   }
 
-  async function refreshCurrentDataViews() {
-    await loadNotes();
-    if (currentNoteId) {
-      const n = findNote(currentNoteId);
-      if (n) openNoteDetail(currentNoteId);
+  function openModal(reminder) {
+    editingId = reminder?.id || null;
+    $('#modal-title').textContent = reminder
+      ? (T.modalEdit || 'Редактировать')
+      : (T.modalNew || 'Новое напоминание');
+    $('#f-title').value = reminder?.title || '';
+    $('#f-text').value = reminder?.text || '';
+
+    const isActive = reminder ? !!reminder.active : false;
+    $('#f-active').checked = isActive;
+    setDatetimeVisible(isActive);
+
+    if (reminder?.datetime) {
+      $('#f-datetime').value = toLocalStr(new Date(reminder.datetime));
+    } else if (isActive) {
+      // локальные дата и время пользователя
+      $('#f-datetime').value = toLocalStr(new Date());
+    } else {
+      $('#f-datetime').value = '';
     }
-  }
-
-  // ─── Create / Edit modal ────────────────────────────────────
-  function openNoteModal(note = null) {
-    editingId = note ? note.id : null;
-    $('#modal-title').textContent = note ? T.noteEditTitle : T.noteNewTitle;
-    $('#edit-id').value = editingId || '';
-    $('#f-text').value = note?.text || '';
-    const hasRemind = !!(note && note.remindAt);
-    $('#f-remind-toggle').checked = hasRemind;
-    $('#f-datetime-wrap').classList.toggle('hidden', !hasRemind);
-
-    const pad = (n) => String(n).padStart(2, '0');
-    const d = note?.remindAt ? new Date(note.remindAt) : new Date(Date.now() + 3600000);
-    $('#f-datetime').value = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 
     modal.classList.remove('hidden');
-    requestAnimationFrame(() => modal.classList.add('show'));
-    setTimeout(() => $('#f-text').focus(), 100);
+    requestAnimationFrame(() => modal.classList.add('open'));
+    setTimeout(() => $('#f-title').focus(), 50);
+  }
+
+  function openView(reminder) {
+    if (!reminder) return;
+    const view = $('#view-modal');
+    if (!view) return;
+    $('#view-title').textContent = reminder.title || 'Заметка';
+    const body = reminder.text && reminder.text.trim()
+      ? reminder.text
+      : 'Нет текста';
+    $('#view-text').textContent = body;
+    $('#view-text').classList.toggle('view-text-empty', !(reminder.text && reminder.text.trim()));
+    const meta = $('#view-meta');
+    if (reminder.active || reminder.sent) {
+      meta.classList.remove('hidden');
+      meta.innerHTML = `<span class="badge ${reminder.sent ? 'sent' : ''}">${
+        reminder.sent ? (T.badgeSent || 'Отправлено') : (T.badgeActive || 'Напоминание')
+      }</span><time datetime="${escape(reminder.datetime)}">${formatDt(reminder.datetime)}</time>`;
+    } else {
+      meta.classList.add('hidden');
+      meta.innerHTML = '';
+    }
+    $('#view-edit').dataset.id = reminder.id;
+    $('#view-delete').dataset.id = reminder.id;
+    view.classList.remove('hidden');
+    requestAnimationFrame(() => view.classList.add('open'));
+  }
+
+  function closeView() {
+    const view = $('#view-modal');
+    if (!view) return;
+    view.classList.remove('open');
+    setTimeout(() => view.classList.add('hidden'), 280);
   }
 
   function closeModal() {
-    modal.classList.remove('show');
-    setTimeout(() => modal.classList.add('hidden'), 200);
-    form.reset();
-    $('#f-datetime-wrap').classList.add('hidden');
-    editingId = null;
+    modal.classList.remove('open');
+    setTimeout(() => {
+      modal.classList.add('hidden');
+      editingId = null;
+      form.reset();
+      setDatetimeVisible(false);
+    }, 280);
   }
 
-  async function submitNoteForm(e) {
+  async function submitForm(e) {
     e.preventDefault();
-    const text = $('#f-text').value.trim();
-    if (!text) return toast(T.toastTextRequired);
+    const title = $('#f-title').value.trim();
+    if (!title) return toast('Укажите заголовок');
 
-    const hasRemind = $('#f-remind-toggle').checked;
-    const payload = { text, remindAt: hasRemind ? new Date($('#f-datetime').value).toISOString() : null };
+    const active = $('#f-active').checked;
+    let raw = $('#f-datetime').value;
+    if (active && !raw) {
+      return toast('Укажите дату и время');
+    }
+    // Если таймер выключен — сохраняем локальное «сейчас», чтобы поле не было пустым на сервере
+    if (!raw) raw = toLocalStr(new Date());
+    const dt = new Date(raw);
+    if (isNaN(dt.getTime())) return toast('Некорректная дата и время');
 
-    const done = playLoading($('#modal-submit-icon'));
+    const payload = {
+      title,
+      text: $('#f-text').value.trim(),
+      datetime: dt.toISOString(),
+      active
+    };
+
     try {
       if (editingId) {
-        await api(`/api/notes/${editingId}`, { method: 'PUT', body: payload });
-        toast(T.toastUpdated);
+        await api(`/api/reminders/${editingId}`, { method: 'PUT', body: payload });
       } else {
-        await api('/api/notes', { method: 'POST', body: payload });
-        toast(T.toastCreated);
+        await api('/api/reminders', { method: 'POST', body: payload });
       }
-      done(true);
       closeModal();
-      await refreshCurrentDataViews();
+      toast(T.toastSaved || 'Сохранено ✨');
+      await loadReminders();
     } catch (err) {
-      done(false);
-      toast(T.toastErrorPrefix + err.message);
+      toast((T.toastSaveFail || 'Ошибка') + ': ' + err.message);
     }
   }
 
-  async function deleteNote(id) {
-    if (!confirm(T.noteConfirmDelete)) return;
+  async function deleteReminder(id) {
+    if (!confirm(T.confirmDelete || 'Удалить это напоминание?')) return;
     try {
-      await api(`/api/notes/${id}`, { method: 'DELETE' });
-      toast(T.toastDeleted);
-      if (currentNoteId === id) { currentNoteId = null; goBack(); }
-      await loadNotes();
-      if (searchResults.length) await runSearch();
-    } catch (err) {
-      toast(T.toastErrorPrefix + err.message);
-    }
-  }
-
-  // ─── Быстрое напоминание (modal-remind) ─────────────────────
-  function openRemindModal() {
-    const n = findNote(currentNoteId);
-    if (!n) return;
-    const pad = (x) => String(x).padStart(2, '0');
-    const d = n.remindAt ? new Date(n.remindAt) : new Date(Date.now() + 3600000);
-    $('#r-datetime').value = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-    modalRemind.classList.remove('hidden');
-    requestAnimationFrame(() => modalRemind.classList.add('show'));
-  }
-
-  function closeRemindModal() {
-    modalRemind.classList.remove('show');
-    setTimeout(() => modalRemind.classList.add('hidden'), 200);
-  }
-
-  async function saveRemind(clear = false) {
-    const payload = { remindAt: clear ? null : new Date($('#r-datetime').value).toISOString() };
-    const done = playLoading($('#remind-submit-icon'));
-    try {
-      await api(`/api/notes/${currentNoteId}`, { method: 'PUT', body: payload });
-      done(true);
-      toast(clear ? T.toastRemindCleared : T.toastRemindSaved);
-      closeRemindModal();
-      await refreshCurrentDataViews();
-    } catch (err) {
-      done(false);
-      toast(T.toastErrorPrefix + err.message);
-    }
-  }
-
-  // ─── Поиск (пункт 4) ──────────────────────────────────────────
-  function searchResultRow(n, index) {
-    const row = document.createElement('article');
-    row.className = 'reminder-card search-row';
-    row.innerHTML = `
-      <div class="accent-bar"></div>
-      <div class="card-top">
-        <h3 class="card-title">${index}. ${escape(n.title)}</h3>
-        <div class="card-actions">
-          <button data-action="open" title="${T.btnEdit}"><span class="icon">${icon('pencil')}</span></button>
-          <button data-action="delete" title="${T.btnDelete}"><span class="icon">${icon('trash')}</span></button>
-        </div>
-      </div>
-      <div class="card-meta">
-        <span>${n.remindAt ? formatDt(n.remindAt) : ''}</span>
-      </div>`;
-    row.querySelector('[data-action="open"]').addEventListener('click', (e) => { e.stopPropagation(); openNoteDetail(n.id); });
-    row.querySelector('[data-action="delete"]').addEventListener('click', (e) => { e.stopPropagation(); deleteNote(n.id); });
-    return row;
-  }
-
-  async function runSearch() {
-    const q = $('#search-input').value.trim();
-    const resultsEl = $('#search-results');
-    const emptyEl = $('#search-empty-state');
-    const countEl = $('#search-count');
-    resultsEl.innerHTML = '';
-
-    if (!q) {
-      searchResults = [];
-      countEl.classList.add('hidden');
-      emptyEl.classList.remove('hidden');
-      $('#search-empty-label').textContent = T.searchHint;
-      return;
-    }
-
-    try {
-      searchResults = await api(`/api/notes/search?q=${encodeURIComponent(q)}`);
+      await api(`/api/reminders/${id}`, { method: 'DELETE' });
+      toast(T.toastDeleted || 'Удалено');
+      await loadReminders();
     } catch (e) {
-      toast(T.toastErrorPrefix + e.message);
-      searchResults = [];
+      toast(e.message);
     }
-
-    if (!searchResults.length) {
-      countEl.classList.add('hidden');
-      emptyEl.classList.remove('hidden');
-      $('#search-empty-label').textContent = T.searchEmpty;
-      return;
-    }
-
-    emptyEl.classList.add('hidden');
-    countEl.classList.remove('hidden');
-    countEl.textContent = T.searchResultsCount(searchResults.length);
-    searchResults.forEach((n, i) => resultsEl.appendChild(searchResultRow(n, i + 1)));
   }
 
-  // ─── Deep link: открыть заметку из уведомления ────────────────
-  function openNoteFromDeepLink() {
+  function debounce(fn, ms) {
+    let t;
+    return (...args) => {
+      clearTimeout(t);
+      t = setTimeout(() => fn(...args), ms);
+    };
+  }
+
+  function bindEvents() {
+    $('#f-active').addEventListener('change', () => {
+      const on = $('#f-active').checked;
+      setDatetimeVisible(on);
+      if (on) {
+        // при включении таймера подставляем локальные дату и время пользователя
+        const cur = $('#f-datetime').value;
+        if (!cur || isNaN(new Date(cur).getTime())) {
+          $('#f-datetime').value = toLocalStr(new Date());
+        }
+      }
+    });
+
+    $('#btn-add').addEventListener('click', () => openModal(null));
+    $('#btn-settings').addEventListener('click', () => {
+      viewList.classList.add('hidden');
+      viewSettings.classList.remove('hidden');
+      viewSettings.classList.add('view-enter');
+    });
+    $('#btn-back').addEventListener('click', () => {
+      viewSettings.classList.add('hidden');
+      viewSettings.classList.remove('view-enter');
+      viewList.classList.remove('hidden');
+    });
+    $('#modal-close').addEventListener('click', closeModal);
+    $('#modal-cancel').addEventListener('click', closeModal);
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) closeModal();
+    });
+    form.addEventListener('submit', submitForm);
+
+    $$('.tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        $$('.tab').forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+        currentFilter = tab.dataset.filter;
+        scheduleRender();
+      });
+    });
+
+    const onSearch = debounce(() => {
+      searchQuery = (searchInput.value || '').trim();
+      searchClear.classList.toggle('hidden', !searchQuery);
+      scheduleRender();
+    }, 180);
+
+    searchInput.addEventListener('input', onSearch);
+    searchClear.addEventListener('click', () => {
+      searchInput.value = '';
+      searchQuery = '';
+      searchClear.classList.add('hidden');
+      scheduleRender();
+      searchInput.focus();
+    });
+
+    listEl.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-action]');
+      if (btn) {
+        e.stopPropagation();
+        const id = btn.dataset.id;
+        const action = btn.dataset.action;
+        if (action === 'delete') deleteReminder(id);
+        if (action === 'edit') {
+          const r = reminders.find(x => x.id === id);
+          if (r) openModal(r);
+        }
+        return;
+      }
+      // клик по карточке — просто прочитать заметку
+      const card = e.target.closest('.reminder-card');
+      if (!card) return;
+      const id = card.dataset.id;
+      const r = reminders.find(x => x.id === id);
+      if (r) openView(r);
+    });
+
+    const viewModal = $('#view-modal');
+    if (viewModal) {
+      $('#view-close')?.addEventListener('click', closeView);
+      viewModal.addEventListener('click', (e) => {
+        if (e.target === viewModal) closeView();
+      });
+      $('#view-edit')?.addEventListener('click', () => {
+        const id = $('#view-edit').dataset.id;
+        closeView();
+        const r = reminders.find(x => x.id === id);
+        if (r) openModal(r);
+      });
+      $('#view-delete')?.addEventListener('click', () => {
+        const id = $('#view-delete').dataset.id;
+        closeView();
+        deleteReminder(id);
+      });
+    }
+
+    if (tg) {
+      tg.BackButton.onClick(() => {
+        if (!viewSettings.classList.contains('hidden')) {
+          $('#btn-back').click();
+        } else if ($('#view-modal') && !$('#view-modal').classList.contains('hidden')) {
+          closeView();
+        } else if (!modal.classList.contains('hidden')) {
+          closeModal();
+        } else {
+          tg.close();
+        }
+      });
+    }
+  }
+
+  function openReminderFromDeepLink() {
     try {
       const params = new URLSearchParams(window.location.search);
-      const noteId = params.get('note');
-      if (!noteId) return;
-      const n = notes.find((x) => x.id === noteId);
-      if (n) { navigateTo('list'); openNoteDetail(noteId); }
-      if (window.history?.replaceState) window.history.replaceState({}, '', window.location.pathname);
+      const reminderId = params.get('reminder');
+      if (!reminderId) return;
+
+      const r = reminders.find(x => x.id === reminderId);
+      if (r) openModal(r);
+      else toast(T.toastNotFound || 'Напоминание не найдено');
+
+      if (window.history?.replaceState) {
+        window.history.replaceState({}, '', window.location.pathname);
+      }
     } catch (_) {}
   }
 
-  // ─── Events ─────────────────────────────────────────────────
-  function bindEvents() {
-    $('#btn-home').addEventListener('click', goToMenu);
-    $('#btn-settings-shortcut').addEventListener('click', () => navigateTo('settings'));
-
-    $('#menu-create').addEventListener('click', () => openNoteModal());
-    $('#menu-notes').addEventListener('click', async () => { navigateTo('list'); await loadNotes(); });
-    $('#menu-search').addEventListener('click', () => {
-      navigateTo('search');
-      $('#search-input').value = '';
-      $('#search-results').innerHTML = '';
-      $('#search-count').classList.add('hidden');
-      $('#search-empty-state').classList.remove('hidden');
-      $('#search-empty-label').textContent = T.searchHint;
-    });
-    $('#menu-settings').addEventListener('click', () => navigateTo('settings'));
-    $('#menu-help').addEventListener('click', () => navigateTo('help'));
-
-    $('#list-to-menu').addEventListener('click', goToMenu);
-    $('#search-to-menu').addEventListener('click', goToMenu);
-    $('#help-to-menu').addEventListener('click', goToMenu);
-    $('#note-btn-menu').addEventListener('click', goToMenu);
-    $('#btn-back-settings').addEventListener('click', goBack);
-
-    $('#pg-prev').addEventListener('click', () => { if (listPage > 1) { listPage--; renderNotesPage(); } });
-    $('#pg-next').addEventListener('click', () => { listPage++; renderNotesPage(); });
-
-    $('#search-go').addEventListener('click', runSearch);
-    $('#search-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); runSearch(); } });
-
-    $('#btn-add').addEventListener('click', () => openNoteModal());
-
-    $('#note-btn-edit').addEventListener('click', () => openNoteModal(findNote(currentNoteId)));
-    $('#note-btn-delete').addEventListener('click', () => deleteNote(currentNoteId));
-    $('#note-btn-remind').addEventListener('click', openRemindModal);
-
-    $('#modal-close').addEventListener('click', closeModal);
-    $('#modal-cancel').addEventListener('click', closeModal);
-    modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
-    form.addEventListener('submit', submitNoteForm);
-    $('#f-remind-toggle').addEventListener('change', (e) => {
-      $('#f-datetime-wrap').classList.toggle('hidden', !e.target.checked);
-    });
-
-    $('#modal-remind-close').addEventListener('click', closeRemindModal);
-    modalRemind.addEventListener('click', (e) => { if (e.target === modalRemind) closeRemindModal(); });
-    $('#modal-remind-save').addEventListener('click', () => saveRemind(false));
-    $('#modal-remind-clear').addEventListener('click', () => saveRemind(true));
-
-    if (tg) tg.BackButton.onClick(goBack);
-  }
-
-  // ─── Init ───────────────────────────────────────────────────
   async function init() {
-    applyStaticTexts();
     bindEvents();
     bindSettingsLive();
     await loadSettings();
-    await loadNotes();
-    openNoteFromDeepLink();
-    renderView('menu');
+    await loadReminders();
+    openReminderFromDeepLink();
+
+    if (tg) {
+      const observer = new MutationObserver(() => {
+        const inSettings = !viewSettings.classList.contains('hidden');
+        const inModal = !modal.classList.contains('hidden');
+        if (inSettings || inModal) tg.BackButton.show();
+        else tg.BackButton.hide();
+      });
+      observer.observe(viewSettings, { attributes: true, attributeFilter: ['class'] });
+      observer.observe(modal, { attributes: true, attributeFilter: ['class'] });
+    }
   }
 
   if (document.readyState === 'loading') {
