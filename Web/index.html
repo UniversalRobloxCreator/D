@@ -7,6 +7,54 @@
   <title>Reminders — Блокнот</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <link rel="stylesheet" href="css/style.css">
+  <script>
+    /* Мгновенно применяем сохранённую тему до отрисовки, чтобы не было
+       мигания дефолтных цветов → пользовательских. */
+    (function () {
+      try {
+        var raw = localStorage.getItem('reminders-theme-v1');
+        if (!raw) return;
+        var s = JSON.parse(raw);
+        if (!s || typeof s !== 'object') return;
+        var root = document.documentElement;
+        var map = {
+          bg: '--bg', card: '--card', surface: '--surface',
+          accent: '--accent', accentHover: '--accent-hover',
+          text: '--text', muted: '--muted', border: '--border',
+          radius: '--radius', fontFamily: '--font',
+          transition: '--transition', blur: '--blur'
+        };
+        // Отключаем transitions на время первой отрисовки
+        root.style.setProperty('--transition', '0s');
+        Object.keys(map).forEach(function (k) {
+          if (s[k] === undefined || s[k] === null) return;
+          var v = s[k];
+          if (k === 'radius') v = v + 'px';
+          if (k === 'transition') v = v + 's';
+          if (k === 'blur') v = v + 'px';
+          root.style.setProperty(map[k], v);
+        });
+        if (s.bg) {
+          var meta = document.querySelector('meta[name="theme-color"]');
+          if (meta) meta.setAttribute('content', s.bg);
+        }
+        document.addEventListener('DOMContentLoaded', function () {
+          if (s.fontFamily) document.body.style.fontFamily = s.fontFamily;
+          if (s.glass) document.body.classList.add('glass');
+          // Вернём transition после первого кадра
+          requestAnimationFrame(function () {
+            requestAnimationFrame(function () {
+              if (s.transition !== undefined) {
+                root.style.setProperty('--transition', s.transition + 's');
+              } else {
+                root.style.removeProperty('--transition');
+              }
+            });
+          });
+        });
+      } catch (e) {}
+    })();
+  </script>
 </head>
 <body>
   <div id="app">
