@@ -3,10 +3,8 @@ try { require('dotenv').config(); } catch (_) {}
 const express = require('express');
 const crypto = require('crypto');
 const fs = require('fs');
-const fsp = fs.promises;
 const path = require('path');
 const cron = require('node-cron');
-const { TEXTS, ICONS } = require('./texts');
 
 const app = express();
 app.disable('x-powered-by');
@@ -17,160 +15,52 @@ const BASE_DIR = __dirname;
 const WEB_DIR = path.join(BASE_DIR, 'Web');
 const DATA_DIR = path.join(BASE_DIR, 'Data');
 
-// ── Пункт 1: где хранятся заметки ───────────────────────────────
-// Заметки: Data/notes.json — словарь { "<telegramId>": [ {id, text,
-// createdAt, remindAt, active, sent}, ... ] }.
-// Настройки (стиль + время переноса напоминаний): Data/settings.json,
-// словарь по тому же принципу { "<telegramId>": {...} }.
-const NOTES_DB = path.join(DATA_DIR, 'notes.json');
-const LEGACY_REMINDERS_DB = path.join(DATA_DIR, 'reminders.json'); // для миграции старых данных
+const REMINDERS_DB = path.join(DATA_DIR, 'reminders.json');
 const SETTINGS_DB = path.join(DATA_DIR, 'settings.json');
 const USERS_DB = path.join(DATA_DIR, 'users.json');
+const TEXTS_FILE = path.join(BASE_DIR, 'texts.json');
 
 const BOT_TOKEN = String(process.env.BOT_TOKEN || '').trim();
 const PUBLIC_URL = String(process.env.PUBLIC_URL || '').trim().replace(/\/+$/, '');
 const MINIAPP_URL = String(process.env.MINIAPP_URL || PUBLIC_URL).trim().replace(/\/+$/, '');
 
-const DEFAULT_SNOOZE_MINUTES = 30;
-const SNOOZE_OPTIONS = [5, 15, 30, 60, 120];
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+['reminders.json', 'settings.json', 'users.json'].forEach(f => {
+  const p = path.join(DATA_DIR, f);
+  if (!fs.existsSync(p)) fs.writeFileSync(p, f === 'settings.json' ? '{}' : '[]', 'utf8');
+});
 
-// ─────────────────────────────────────────────────────────────────
-// Пункт 2 (оптимизация): всё хранилище держим в памяти и читаем с
-// диска ровно один раз при старте. Каждый GET-запрос обслуживается
-// из кэша без обращения к диску. На диск пишем асинхронно и только
-// при реальном изменении данных (create/update/delete/settings),
-// атомарно (запись во временный файл + rename), чтобы не терять
-// данные при падении процесса посреди записи.
-// ─────────────────────────────────────────────────────────────────
-let notesCache = null;     // { [userId]: Note[] }
-let settingsCache = null;  // { [userId]: Settings }
-let usersCache = null;     // Array<{id, first_name, username, createdAt}>
-let usersIndex = null;     // Set<number> для быстрой проверки "уже видели"
-
-async function ensureDataDir() {
-  await fsp.mkdir(DATA_DIR, { recursive: true });
+let TEXTS = {};
+try {
+  TEXTS = JSON.parse(fs.readFileSync(TEXTS_FILE, 'utf8'));
+} catch {
+  TEXTS = { app: {}, bot: {} };
 }
 
-async function readJsonSafe(file, fallback) {
+function tBot(key, vars = {}) {
+  let s = (TEXTS.bot && TEXTS.bot[key]) || key;
+  Object.entries(vars).forEach(([k, v]) => {
+    s = s.replace(new RegExp('\\{' + k + '\\}', 'g'), String(v));
+  });
+  return s;
+}
+
+function readJson(file, fallback) {
   try {
-    const raw = await fsp.readFile(file, 'utf8');
-    const parsed = JSON.parse(raw);
+    const raw = fs.readFileSync(file, 'utf8');
+    const parsed = JSON.parse(raw || (Array.isArray(fallback) ? '[]' : '{}'));
     if (parsed === null || parsed === undefined) return fallback;
+    if (Array.isArray(fallback) && !Array.isArray(parsed)) return fallback;
     return parsed;
   } catch {
     return fallback;
   }
 }
 
-// Атомарная запись: пишем во временный файл рядом и переименовываем
-// поверх целевого — rename() на одной файловой системе атомарен, так
-// что при падении процесса мы теряем максимум незавершённую запись,
-// но никогда не оставляем notes.json в наполовину записанном виде.
-async function atomicWriteJson(file, data) {
-  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-  await fsp.writeFile(tmp, JSON.stringify(data, null, 2), 'utf8');
-  await fsp.rename(tmp, file);
-}
-
-// load_notes(): загрузка (с миграцией со старого формата reminders.json,
-// где заметки лежали единым списком с полем userId у каждой записи).
-async function loadNotes() {
-  let data = await readJsonSafe(NOTES_DB, null);
-  if (data && typeof data === 'object' && !Array.isArray(data)) {
-    return data;
-  }
-
-  // notes.json ещё нет — пробуем смигрировать старый reminders.json
-  const legacy = await readJsonSafe(LEGACY_REMINDERS_DB, null);
-  const migrated = {};
-  if (Array.isArray(legacy)) {
-    for (const r of legacy) {
-      const uid = String(r.userId);
-      if (!migrated[uid]) migrated[uid] = [];
-      migrated[uid].push({
-        id: r.id || crypto.randomUUID(),
-        text: r.text || r.title || '',
-        createdAt: r.createdAt || new Date().toISOString(),
-        remindAt: r.datetime || null,
-        active: r.active !== undefined ? Boolean(r.active) : Boolean(r.datetime),
-        sent: Boolean(r.sent),
-      });
-    }
-  }
-  return migrated;
-}
-
-// save_notes(): атомарная запись всего кэша на диск.
-async function saveNotes() {
-  await atomicWriteJson(NOTES_DB, notesCache);
-}
-
-// get_user_notes(): заметки одного пользователя из кэша (без диска).
-function getUserNotes(userId) {
-  const key = String(userId);
-  if (!notesCache[key]) notesCache[key] = [];
-  return notesCache[key];
-}
-
-async function loadSettings() {
-  const data = await readJsonSafe(SETTINGS_DB, {});
-  return data && typeof data === 'object' && !Array.isArray(data) ? data : {};
-}
-
-async function saveSettingsToDisk() {
-  await atomicWriteJson(SETTINGS_DB, settingsCache);
-}
-
-function defaultStyleSettings() {
-  return {
-    bg: '#0d0d0d', card: '#151515', surface: '#1a1a1a',
-    accent: '#ff3333', accentHover: '#ff5555',
-    text: '#e0e0e0', muted: '#888888', border: '#333333',
-    radius: '14', fontFamily: 'system-ui, -apple-system, "Segoe UI", sans-serif',
-    transition: '0.35s', glass: false, blur: '12',
-    snoozeMinutes: DEFAULT_SNOOZE_MINUTES,
-  };
-}
-
-function getUserSettings(userId) {
-  const key = String(userId);
-  const saved = settingsCache[key] || {};
-  return { ...defaultStyleSettings(), ...saved };
-}
-
-async function loadUsers() {
-  const data = await readJsonSafe(USERS_DB, []);
-  return Array.isArray(data) ? data : [];
-}
-
-async function saveUsersToDisk() {
-  await atomicWriteJson(USERS_DB, usersCache);
-}
-
-function rememberUser(user) {
-  if (usersIndex.has(user.id)) return;
-  usersIndex.add(user.id);
-  usersCache.push({
-    id: user.id,
-    first_name: user.first_name,
-    username: user.username || '',
-    createdAt: new Date().toISOString(),
-  });
-  // Не блокируем ответ на запись — фиксируем в фоне.
-  saveUsersToDisk().catch((e) => console.error('saveUsers error', e));
-}
-
-async function initStorage() {
-  await ensureDataDir();
-  notesCache = await loadNotes();
-  settingsCache = await loadSettings();
-  usersCache = await loadUsers();
-  usersIndex = new Set(usersCache.map((u) => u.id));
-  // Если только что смигрировали со старого формата — сразу сохраним
-  // в новом файле, чтобы notes.json точно существовал на диске.
-  if (!fs.existsSync(NOTES_DB)) await saveNotes();
-  if (!fs.existsSync(SETTINGS_DB)) await saveSettingsToDisk();
-  if (!fs.existsSync(USERS_DB)) await saveUsersToDisk();
+function writeJson(file, data) {
+  const tmp = file + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8');
+  fs.renameSync(tmp, file);
 }
 
 function validateTelegramWebAppData(initData) {
@@ -182,7 +72,7 @@ function validateTelegramWebAppData(initData) {
     params.delete('hash');
     const dataCheckString = [...params.entries()]
       .sort(([a], [b]) => a.localeCompare(b))
-      .map(([k, v]) => `${k}=${v}`)
+      .map(([k, v]) => k + '=' + v)
       .join('\n');
     const secretKey = crypto.createHmac('sha256', 'WebAppData').update(BOT_TOKEN).digest();
     const calculated = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
@@ -195,12 +85,6 @@ function validateTelegramWebAppData(initData) {
   }
 }
 
-// Casefold-эквивалент для регистронезависимого поиска (пункт 4).
-function casefold(s) {
-  return String(s || '').toLocaleLowerCase('ru-RU');
-}
-
-// Middleware
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(WEB_DIR));
@@ -222,269 +106,313 @@ function getUser(req) {
   return user;
 }
 
-function serializeNote(n) {
-  return {
-    id: n.id,
-    text: n.text,
-    title: (n.text || '').split('\n')[0].slice(0, 80) || 'Без текста',
-    createdAt: n.createdAt,
-    remindAt: n.remindAt,
-    active: n.active,
-    sent: n.sent,
-  };
+function getSnoozeMinutes(userId) {
+  const all = readJson(SETTINGS_DB, {});
+  const s = all[String(userId)] || {};
+  const n = Number(s.snoozeMinutes);
+  if (Number.isFinite(n) && n >= 1 && n <= 1440) return Math.round(n);
+  return 30;
 }
 
-// ─── API: Заметки ───────────────────────────────────────────────
+app.get('/api/texts', (_req, res) => {
+  res.json(TEXTS);
+});
 
-app.get('/api/notes', (req, res) => {
+app.get('/api/reminders', (req, res) => {
   const user = getUser(req);
-  if (!user) return res.status(401).json({ error: TEXTS.errUnauthorized });
+  if (!user) return res.status(401).json({ error: 'Unauthorized' });
 
-  const list = getUserNotes(user.id)
-    .slice()
-    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
-    .map(serializeNote);
+  const all = readJson(REMINDERS_DB, []);
+  const list = all
+    .filter(r => String(r.userId) === String(user.id))
+    .sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
   res.json(list);
 });
 
-app.get('/api/notes/search', (req, res) => {
+app.post('/api/reminders', (req, res) => {
   const user = getUser(req);
-  if (!user) return res.status(401).json({ error: TEXTS.errUnauthorized });
+  if (!user) return res.status(401).json({ error: 'Unauthorized' });
 
-  const q = casefold(req.query.q || '');
-  const all = getUserNotes(user.id);
-  const results = q
-    ? all.filter((n) => casefold(n.text).includes(q))
-    : [];
-  res.json(results.map(serializeNote));
-});
-
-app.post('/api/notes', async (req, res) => {
-  const user = getUser(req);
-  if (!user) return res.status(401).json({ error: TEXTS.errUnauthorized });
-
-  const { text, remindAt } = req.body || {};
-  if (!text || !String(text).trim()) {
-    return res.status(400).json({ error: TEXTS.errTextRequired });
+  const { title, text, datetime, active = true } = req.body || {};
+  if (!title || !datetime) {
+    return res.status(400).json({ error: 'title and datetime required' });
   }
 
-  const note = {
+  const all = readJson(REMINDERS_DB, []);
+  const reminder = {
     id: crypto.randomUUID(),
-    text: String(text).slice(0, 2000),
-    createdAt: new Date().toISOString(),
-    remindAt: remindAt ? new Date(remindAt).toISOString() : null,
-    active: Boolean(remindAt),
+    userId: user.id,
+    title: String(title).slice(0, 120),
+    text: String(text || '').slice(0, 1000),
+    datetime: new Date(datetime).toISOString(),
+    active: Boolean(active),
     sent: false,
+    createdAt: new Date().toISOString()
   };
-  getUserNotes(user.id).push(note);
+  all.push(reminder);
+  writeJson(REMINDERS_DB, all);
 
-  rememberUser(user);
-  try {
-    await saveNotes();
-  } catch (e) {
-    console.error('saveNotes error', e);
-    return res.status(500).json({ error: 'save failed' });
+  const users = readJson(USERS_DB, []);
+  if (!users.find(u => String(u.id) === String(user.id))) {
+    users.push({
+      id: user.id,
+      first_name: user.first_name,
+      username: user.username || '',
+      createdAt: new Date().toISOString()
+    });
+    writeJson(USERS_DB, users);
   }
-  res.status(201).json(serializeNote(note));
+
+  res.status(201).json(reminder);
 });
 
-app.put('/api/notes/:id', async (req, res) => {
+app.put('/api/reminders/:id', (req, res) => {
   const user = getUser(req);
-  if (!user) return res.status(401).json({ error: TEXTS.errUnauthorized });
+  if (!user) return res.status(401).json({ error: 'Unauthorized' });
 
-  const list = getUserNotes(user.id);
-  const note = list.find((n) => n.id === req.params.id);
-  if (!note) return res.status(404).json({ error: TEXTS.errNotFound });
+  const all = readJson(REMINDERS_DB, []);
+  const idx = all.findIndex(r => r.id === req.params.id && String(r.userId) === String(user.id));
+  if (idx === -1) return res.status(404).json({ error: 'Not found' });
 
-  const { text, remindAt, active } = req.body || {};
-  if (text !== undefined) note.text = String(text).slice(0, 2000);
-  if (remindAt !== undefined) {
-    note.remindAt = remindAt ? new Date(remindAt).toISOString() : null;
-    note.sent = false;
-    note.active = Boolean(remindAt);
+  const { title, text, datetime, active } = req.body || {};
+  if (title !== undefined) all[idx].title = String(title).slice(0, 120);
+  if (text !== undefined) all[idx].text = String(text).slice(0, 1000);
+  if (datetime !== undefined) {
+    all[idx].datetime = new Date(datetime).toISOString();
+    all[idx].sent = false;
   }
-  if (active !== undefined) note.active = Boolean(active);
+  if (active !== undefined) all[idx].active = Boolean(active);
 
-  try {
-    await saveNotes();
-  } catch (e) {
-    console.error('saveNotes error', e);
-    return res.status(500).json({ error: 'save failed' });
-  }
-  res.json(serializeNote(note));
+  writeJson(REMINDERS_DB, all);
+  res.json(all[idx]);
 });
 
-app.delete('/api/notes/:id', async (req, res) => {
+app.delete('/api/reminders/:id', (req, res) => {
   const user = getUser(req);
-  if (!user) return res.status(401).json({ error: TEXTS.errUnauthorized });
+  if (!user) return res.status(401).json({ error: 'Unauthorized' });
 
-  const list = getUserNotes(user.id);
-  const idx = list.findIndex((n) => n.id === req.params.id);
-  if (idx === -1) return res.status(404).json({ error: TEXTS.errNotFound });
-  list.splice(idx, 1);
-
-  try {
-    await saveNotes();
-  } catch (e) {
-    console.error('saveNotes error', e);
-    return res.status(500).json({ error: 'save failed' });
-  }
+  let all = readJson(REMINDERS_DB, []);
+  const before = all.length;
+  all = all.filter(r => !(r.id === req.params.id && String(r.userId) === String(user.id)));
+  if (all.length === before) return res.status(404).json({ error: 'Not found' });
+  writeJson(REMINDERS_DB, all);
   res.json({ ok: true });
 });
 
-// ─── API: Настройки (стиль + время переноса, пункт 7) ───────────
+const SETTINGS_DEFAULTS = {
+  bg: '#0d0d0d',
+  card: '#151515',
+  surface: '#1a1a1a',
+  accent: '#ff3333',
+  accentHover: '#ff5555',
+  text: '#e0e0e0',
+  muted: '#888888',
+  border: '#333333',
+  radius: '14',
+  fontFamily: 'system-ui, -apple-system, "Segoe UI", sans-serif',
+  transition: '0.35',
+  glass: false,
+  blur: '12',
+  snoozeMinutes: 30
+};
+
+const SETTINGS_ALLOWED = [
+  'bg', 'card', 'surface', 'accent', 'accentHover', 'text', 'muted',
+  'border', 'radius', 'fontFamily', 'transition', 'glass', 'blur', 'snoozeMinutes'
+];
 
 app.get('/api/settings', (req, res) => {
   const user = getUser(req);
-  if (!user) return res.status(401).json({ error: TEXTS.errUnauthorized });
-  res.json(getUserSettings(user.id));
+  if (!user) return res.status(401).json({ error: 'Unauthorized' });
+
+  const all = readJson(SETTINGS_DB, {});
+  const userSettings = all[String(user.id)] || {};
+  res.json({ ...SETTINGS_DEFAULTS, ...userSettings });
 });
 
-app.post('/api/settings', async (req, res) => {
+app.post('/api/settings', (req, res) => {
   const user = getUser(req);
-  if (!user) return res.status(401).json({ error: TEXTS.errUnauthorized });
+  if (!user) return res.status(401).json({ error: 'Unauthorized' });
 
-  const allowed = [
-    'bg', 'card', 'surface', 'accent', 'accentHover', 'text', 'muted',
-    'border', 'radius', 'fontFamily', 'transition', 'glass', 'blur',
-    'snoozeMinutes',
-  ];
+  const all = readJson(SETTINGS_DB, {});
   const incoming = req.body || {};
   const clean = {};
-  allowed.forEach((k) => {
-    if (incoming[k] === undefined) return;
-    if (k === 'snoozeMinutes') {
-      const n = Number(incoming[k]);
-      clean[k] = Number.isFinite(n) && n > 0 && n <= 1440 ? Math.round(n) : DEFAULT_SNOOZE_MINUTES;
-    } else {
-      clean[k] = incoming[k];
+  SETTINGS_ALLOWED.forEach(k => {
+    if (incoming[k] !== undefined) {
+      if (k === 'snoozeMinutes') {
+        const n = Number(incoming[k]);
+        clean[k] = Number.isFinite(n) ? Math.min(1440, Math.max(1, Math.round(n))) : 30;
+      } else {
+        clean[k] = incoming[k];
+      }
     }
   });
-
-  const key = String(user.id);
-  settingsCache[key] = { ...(settingsCache[key] || {}), ...clean };
-
-  try {
-    await saveSettingsToDisk();
-  } catch (e) {
-    console.error('saveSettings error', e);
-    return res.status(500).json({ error: 'save failed' });
-  }
-  res.json(getUserSettings(user.id));
+  all[String(user.id)] = { ...(all[String(user.id)] || {}), ...clean };
+  writeJson(SETTINGS_DB, all);
+  res.json({ ...SETTINGS_DEFAULTS, ...all[String(user.id)] });
 });
 
-app.get('/api/snooze-options', (req, res) => {
-  res.json({ options: SNOOZE_OPTIONS, default: DEFAULT_SNOOZE_MINUTES });
-});
-
-// ─── Telegram Bot: webhook и отправка сообщений ──────────────────
-
-async function tgApi(method, payload) {
+async function tgApi(method, body) {
   if (!BOT_TOKEN) {
-    console.log(`[MOCK ${method}]`, JSON.stringify(payload));
+    console.log('[MOCK TG]', method, JSON.stringify(body));
     return { ok: true, mock: true };
   }
-  const url = `https://api.telegram.org/bot${BOT_TOKEN}/${method}`;
   try {
-    const r = await fetch(url, {
+    const r = await fetch('https://api.telegram.org/bot' + BOT_TOKEN + '/' + method, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(body)
     });
-    return await r.json();
+    const data = await r.json();
+    if (!data.ok) console.error('TG API error', method, data);
+    return data;
   } catch (e) {
-    console.error(`${method} error`, e);
+    console.error(method, e.message);
     return { ok: false, error: e.message };
   }
 }
 
-function sendTelegramMessage(chatId, text, extra = {}) {
-  return tgApi('sendMessage', { chat_id: chatId, text, parse_mode: 'HTML', ...extra });
-}
-
-function answerCallbackQuery(id, text, showAlert = false) {
-  return tgApi('answerCallbackQuery', { callback_query_id: id, text, show_alert: showAlert });
-}
-
-function editMessageReplyMarkup(chatId, messageId, replyMarkup) {
-  return tgApi('editMessageReplyMarkup', {
+async function sendTelegramMessage(chatId, text, extra = {}) {
+  return tgApi('sendMessage', {
     chat_id: chatId,
-    message_id: messageId,
-    reply_markup: replyMarkup,
+    text,
+    parse_mode: 'HTML',
+    ...extra
   });
 }
 
-function buildReminderUrl(noteId) {
-  if (!MINIAPP_URL) return null;
-  const sep = MINIAPP_URL.includes('?') ? '&' : '?';
-  return `${MINIAPP_URL}${sep}note=${encodeURIComponent(noteId)}&reschedule=1`;
+async function answerCallbackQuery(id, text, showAlert = false) {
+  return tgApi('answerCallbackQuery', {
+    callback_query_id: id,
+    text: text || '',
+    show_alert: showAlert
+  });
 }
 
-// Кнопка «Отложить на N мин» — N берётся из настроек конкретного
-// пользователя (пункт 7).
-function buildReminderKeyboard(userId, noteId) {
-  const mins = getUserSettings(userId).snoozeMinutes;
-  return {
-    inline_keyboard: [[
-      { text: TEXTS.snoozeButtonLabel(mins), callback_data: `snooze:${userId}:${noteId}` },
-    ]],
+async function editMessageReplyMarkup(chatId, messageId, inlineKeyboard) {
+  return tgApi('editMessageReplyMarkup', {
+    chat_id: chatId,
+    message_id: messageId,
+    reply_markup: { inline_keyboard: inlineKeyboard }
+  });
+}
+
+async function editMessageText(chatId, messageId, text, inlineKeyboard) {
+  const body = {
+    chat_id: chatId,
+    message_id: messageId,
+    text,
+    parse_mode: 'HTML'
   };
+  if (inlineKeyboard) {
+    body.reply_markup = { inline_keyboard: inlineKeyboard };
+  }
+  return tgApi('editMessageText', body);
+}
+
+function buildReminderUrl(reminderId) {
+  if (!MINIAPP_URL) return null;
+  const sep = MINIAPP_URL.includes('?') ? '&' : '?';
+  return MINIAPP_URL + sep + 'reminder=' + encodeURIComponent(reminderId) + '&reschedule=1';
+}
+
+/** Returns inline_keyboard rows (not wrapped in reply_markup). */
+function buildReminderKeyboardRows(reminderId, minutes, { snoozed = false } = {}) {
+  const m = Math.max(1, Number(minutes) || 30);
+  const rescheduleUrl = buildReminderUrl(reminderId);
+  const secondButton = rescheduleUrl
+    ? { text: tBot('rescheduleBtn'), web_app: { url: rescheduleUrl } }
+    : { text: tBot('rescheduleBtn'), callback_data: 'reschedule_info:' + reminderId };
+
+  const snoozeText = snoozed
+    ? tBot('snoozeBtnDone', { minutes: m })
+    : tBot('snoozeBtn', { minutes: m });
+
+  const firstButton = snoozed
+    ? { text: snoozeText, callback_data: 'snooze_done:' + reminderId }
+    : { text: snoozeText, callback_data: 'snooze:' + reminderId + ':' + m };
+
+  return [[firstButton, secondButton]];
 }
 
 async function handleCallbackQuery(cq) {
   const data = String(cq.data || '');
-  const chatId = cq.message?.chat?.id;
-  const messageId = cq.message?.message_id;
+  const chatId = cq.message && cq.message.chat ? cq.message.chat.id : undefined;
+  const messageId = cq.message ? cq.message.message_id : undefined;
 
   try {
-    if (data === 'noop') {
-      await answerCallbackQuery(cq.id, TEXTS.snoozeAgainToast);
+    if (data.startsWith('snooze_done:')) {
+      await answerCallbackQuery(cq.id, '✓ Уже перенесено');
       return;
     }
 
+    // Format: snooze:<id>:<minutes>  OR legacy snooze:<id>
     if (data.startsWith('snooze:')) {
-      const [, userId, noteId] = data.split(':');
-      const note = getUserNotes(userId).find((n) => n.id === noteId);
+      const parts = data.split(':');
+      const id = parts[1];
+      let minutes = Number(parts[2]);
 
-      if (!note) {
-        await answerCallbackQuery(cq.id, TEXTS.noteNotFoundToast, true);
+      const all = readJson(REMINDERS_DB, []);
+      const idx = all.findIndex(r => r.id === id);
+
+      if (idx === -1) {
+        await answerCallbackQuery(cq.id, tBot('notFound'), true);
         return;
       }
 
-      const mins = getUserSettings(userId).snoozeMinutes;
-      const newDue = new Date(Date.now() + mins * 60 * 1000);
-      note.remindAt = newDue.toISOString();
-      note.sent = false;
-      note.active = true;
-      await saveNotes();
-
-      // Ставим галочку на кнопке и делаем её неактивной (пункт 7):
-      // меняем текст на "Отложено на N мин" и заменяем callback_data
-      // на инертный 'noop', чтобы повторное нажатие ничего не делало.
-      if (chatId && messageId) {
-        await editMessageReplyMarkup(chatId, messageId, {
-          inline_keyboard: [[{ text: TEXTS.snoozedButtonLabel(mins), callback_data: 'noop' }]],
-        });
+      if (!Number.isFinite(minutes) || minutes < 1) {
+        minutes = getSnoozeMinutes(all[idx].userId);
       }
+      minutes = Math.min(1440, Math.max(1, Math.round(minutes)));
 
-      await answerCallbackQuery(cq.id, TEXTS.snoozeToast(mins));
+      const newDue = new Date(Date.now() + minutes * 60 * 1000);
+      all[idx].datetime = newDue.toISOString();
+      all[idx].sent = false;
+      all[idx].active = true;
+      writeJson(REMINDERS_DB, all);
+
+      await answerCallbackQuery(cq.id, tBot('snoozeAnswer', { minutes }));
+
+      // Перезаписываем исходное сообщение: новый текст + одна кнопка с галочкой
+      if (chatId != null && messageId != null) {
+        const rewritten = tBot('reminderBody', {
+          title: escapeHtml(all[idx].title),
+          text: escapeHtml(all[idx].text || ''),
+          time: formatDate(newDue)
+        }) + '\n\n<i>🔁 Повтор через ' + minutes + ' мин — ' + formatDate(newDue) + '</i>';
+
+        const rows = [[
+          {
+            text: tBot('snoozeBtnDone', { minutes }),
+            callback_data: 'snooze_done:' + id
+          }
+        ]];
+
+        const editResult = await editMessageText(chatId, messageId, rewritten, rows);
+        if (!editResult.ok) {
+          console.error('editMessageText failed', editResult);
+          // fallback: хотя бы клавиатуру обновить
+          await editMessageReplyMarkup(chatId, messageId, rows);
+        }
+      }
+      // Новое уведомление уйдёт автоматически через cron, когда наступит newDue
       return;
     }
 
     if (data.startsWith('reschedule_info:')) {
-      await answerCallbackQuery(cq.id, TEXTS.botRescheduleHint, true);
+      await answerCallbackQuery(cq.id, tBot('rescheduleInfo'), true);
       return;
     }
 
     await answerCallbackQuery(cq.id);
   } catch (e) {
     console.error('handleCallbackQuery error', e);
-    try { await answerCallbackQuery(cq.id, TEXTS.genericErrorToast, true); } catch (_) {}
+    try { await answerCallbackQuery(cq.id, tBot('errorGeneric'), true); } catch (_) {}
   }
 }
 
 app.post('/tg/webhook', async (req, res) => {
-  res.sendStatus(200); // отвечаем Telegram сразу, обработка — ниже
+  res.sendStatus(200);
 
   const update = req.body;
   if (!update) return;
@@ -499,51 +427,60 @@ app.post('/tg/webhook', async (req, res) => {
     const chatId = update.message.chat.id;
     if (text.startsWith('/start')) {
       const keyboard = MINIAPP_URL
-        ? { reply_markup: { inline_keyboard: [[{ text: TEXTS.botOpenAppBtn, web_app: { url: MINIAPP_URL } }]] } }
+        ? {
+            reply_markup: {
+              inline_keyboard: [[{ text: tBot('openNotebook'), web_app: { url: MINIAPP_URL } }]]
+            }
+          }
         : {};
-      await sendTelegramMessage(chatId, TEXTS.botGreeting, keyboard);
+      await sendTelegramMessage(chatId, tBot('start'), keyboard);
     }
   }
 });
 
 async function setupWebhook() {
   if (!BOT_TOKEN || !PUBLIC_URL) {
-    console.log('BOT_TOKEN или PUBLIC_URL не заданы — webhook не регистрируется (локальный/mock режим).');
+    console.log('⚠️  BOT_TOKEN or PUBLIC_URL not set — webhook not registered. Local/mock mode.');
     return;
   }
-  const webhookUrl = `${PUBLIC_URL}/tg/webhook`;
-  const data = await tgApi('setWebhook', { url: webhookUrl });
-  console.log('Webhook setup:', data.ok ? 'OK -> ' + webhookUrl : data);
+  const webhookUrl = PUBLIC_URL + '/tg/webhook';
+  try {
+    const data = await tgApi('setWebhook', { url: webhookUrl });
+    console.log('Webhook setup:', data.ok ? 'OK → ' + webhookUrl : data);
+  } catch (e) {
+    console.error('Webhook setup failed', e.message);
+  }
 }
 
-// ─── Планировщик: проверка просроченных напоминаний раз в минуту ─
-// Пункт 2 (оптимизация): читаем due-заметки из уже загруженного в
-// память кэша, а не с диска — на диск пишем только если что-то
-// реально изменилось за проход.
 cron.schedule('* * * * *', async () => {
   const now = new Date();
+  const all = readJson(REMINDERS_DB, []);
   let changed = false;
 
-  for (const userId of Object.keys(notesCache)) {
-    for (const note of notesCache[userId]) {
-      if (!note.active || note.sent || !note.remindAt) continue;
-      const due = new Date(note.remindAt);
-      if (due <= now) {
-        const msg = `${TEXTS.reminderPrefix}\n\n${escapeHtml(note.text)}`;
-        await sendTelegramMessage(userId, msg, { reply_markup: buildReminderKeyboard(userId, note.id) });
-        note.sent = true;
-        note.active = false;
-        changed = true;
+  for (const r of all) {
+    if (!r.active || r.sent) continue;
+    const due = new Date(r.datetime);
+    if (due <= now) {
+      const minutes = getSnoozeMinutes(r.userId);
+      const msg = tBot('reminderBody', {
+        title: escapeHtml(r.title),
+        text: escapeHtml(r.text || ''),
+        time: formatDate(due)
+      });
+      const result = await sendTelegramMessage(r.userId, msg, {
+        reply_markup: { inline_keyboard: buildReminderKeyboardRows(r.id, minutes) }
+      });
+      if (result && result.ok === false) {
+        console.error('Failed to send reminder', r.id, result);
+        continue;
       }
+      r.sent = true;
+      r.active = false;
+      changed = true;
+      console.log('Sent reminder ' + r.id + ' to ' + r.userId + ' (snooze=' + minutes + 'm)');
     }
   }
-  if (changed) {
-    try {
-      await saveNotes();
-    } catch (e) {
-      console.error('saveNotes (cron) error', e);
-    }
-  }
+  if (changed) writeJson(REMINDERS_DB, all);
 });
 
 function escapeHtml(s) {
@@ -553,23 +490,21 @@ function escapeHtml(s) {
     .replace(/>/g, '&gt;');
 }
 
-// SPA fallback
+function formatDate(d) {
+  return d.toLocaleString('ru-RU', {
+    day: '2-digit', month: '2-digit', year: 'numeric',
+    hour: '2-digit', minute: '2-digit'
+  });
+}
+
 app.get('*', (req, res) => {
   res.sendFile(path.join(WEB_DIR, 'index.html'));
 });
 
-// Start
-initStorage()
-  .then(() => {
-    app.listen(PORT, () => {
-      console.log(`\nБлокнот заметок запущен: http://localhost:${PORT}`);
-      console.log(`   Заметки: ${NOTES_DB}`);
-      console.log(`   Настройки: ${SETTINGS_DB}`);
-      if (process.env.ALLOW_MOCK === '1') console.log('   MOCK режим включён (авторизация Telegram не требуется)');
-      setupWebhook();
-    });
-  })
-  .catch((e) => {
-    console.error('Не удалось инициализировать хранилище:', e);
-    process.exit(1);
-  });
+app.listen(PORT, () => {
+  console.log('\n🚀 Reminders Mini App running on http://localhost:' + PORT);
+  console.log('   Data dir: ' + DATA_DIR);
+  console.log('   Notes file: ' + REMINDERS_DB + ' (filtered by Telegram userId)');
+  if (process.env.ALLOW_MOCK === '1') console.log('   MOCK mode enabled (no Telegram auth required)');
+  setupWebhook();
+});
