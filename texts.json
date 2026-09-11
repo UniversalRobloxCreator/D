@@ -48,7 +48,6 @@
     "labelSurface": "Поверхность",
     "labelAccent": "Акцент",
     "labelAccentHover": "Акцент (hover)",
-    "labelText": "Текст",
     "labelMuted": "Приглушённый",
     "labelBorder": "Граница",
     "labelRadius": "Скругление",
@@ -69,14 +68,14 @@
   "bot": {
     "start": "👋 Привет! Это мини-приложение <b>Reminders</b> — твой личный блокнот напоминаний.\n\nНажми кнопку ниже, чтобы открыть.",
     "openNotebook": "📝 Открыть блокнот",
-    "snoozeBtn": "🔁 Через {minutes} мин",
-    "snoozeBtnDone": "✅ Через {minutes} мин",
-    "rescheduleBtn": "🕐 Изменить время",
-    "snoozeAnswer": "⏰ Отправлю через {minutes} мин",
-    "snoozeConfirm": "🔁 Хорошо! Напомню про «{title}» ещё раз в {time}.",
+    "snoozeBtn": "Через {minutes} мин",
+    "snoozeBtnDone": "Через {minutes} мин ✓",
+    "rescheduleBtn": "Изменить время",
+    "snoozeAnswer": "Отправлю через {minutes} мин",
+    "snoozeConfirm": "Хорошо! Напомню про «{title}» ещё раз в {time}.",
     "notFound": "Напоминание не найдено",
     "rescheduleInfo": "Откройте блокнот через /start, чтобы изменить время",
     "errorGeneric": "Ошибка, попробуйте ещё раз",
-    "reminderBody": "⏰ <b>{title}</b>\n\n{text}\n\n<i>{time}</i>"
+    "reminderBody": "<b>{title}</b>\n\n{text}\n\n<i>{time}</i>"
   }
 }

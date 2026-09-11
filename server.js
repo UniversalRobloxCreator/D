@@ -379,7 +379,7 @@ async function handleCallbackQuery(cq) {
           title: escapeHtml(all[idx].title),
           text: escapeHtml(all[idx].text || ''),
           time: formatDate(newDue)
-        }) + '\n\n<i>🔁 Повтор через ' + minutes + ' мин — ' + formatDate(newDue) + '</i>';
+        }) + '\n\n<i>Повтор через ' + minutes + ' мин — ' + formatDate(newDue) + '</i>';
 
         const rows = [[
           {
@@ -491,10 +491,24 @@ function escapeHtml(s) {
 }
 
 function formatDate(d) {
-  return d.toLocaleString('ru-RU', {
-    day: '2-digit', month: '2-digit', year: 'numeric',
-    hour: '2-digit', minute: '2-digit'
-  });
+  // Фиксированный формат и часовой пояс, чтобы время в сообщении
+  // всегда совпадало с ожидаемым (не зависело от TZ сервера).
+  const parts = new Intl.DateTimeFormat('ru-RU', {
+    timeZone: 'Europe/Moscow',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  }).formatToParts(d);
+
+  const get = (type) => {
+    const p = parts.find(x => x.type === type);
+    return p ? p.value : '';
+  };
+  // DD.MM.YYYY HH:MM без запятой и лишних символов
+  return `${get('day')}.${get('month')}.${get('year')} ${get('hour')}:${get('minute')}`;
 }
 
 app.get('*', (req, res) => {
